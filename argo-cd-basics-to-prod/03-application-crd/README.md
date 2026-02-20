@@ -22,8 +22,8 @@ This demo introduces the **ArgoCD Application Custom Resource Definition (CRD)**
 
 ## Prerequisites
 
-- ✅ Completed Demo-01 — EKS/Kind cluster running
-- ✅ Completed Demo-02 — ArgoCD installed via Helm in the `argocd` namespace
+- ✅ Completed Demo-01 — core concepts understood
+- ✅ Completed Demo-02 — ArgoCD installed
 - ✅ ArgoCD pods are running (`kubectl get pods -n argocd`)
 - ✅ ArgoCD UI accessible via port-forwarding on `localhost:8080`
 - ✅ `kubectl` configured and pointing to your cluster
