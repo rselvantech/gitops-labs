@@ -58,10 +58,7 @@ helm-guestbook/
 
 `Chart.yaml` — identifies the chart. Contains name, version, and description. ArgoCD reads this to understand what it is deploying.
 
-`values.yaml` — default configuration values. Loaded automatically unless a different file is specified. Think of this as the "base config" that works for development.
-
 `values.yaml` — default configuration values built into the Helm chart. **This is standard Helm behaviour, not ArgoCD specific** — Helm automatically loads `values.yaml` as the base whenever `helm template` runs, regardless of whether ArgoCD is involved. Think of it as the "base config" that is always loaded first. Any additional value files you specify are merged on top of it.
-
 
 `values-production.yaml` — an additional values file with production-specific overrides. **Again, standard Helm — not ArgoCD specific.** When specified in `valueFiles`, Helm merges it on top of `values.yaml`, with the production file taking precedence for any overlapping keys. In the guestbook example this changes the Service type from `ClusterIP` to `LoadBalancer`.
 
@@ -526,7 +523,7 @@ This is the default behaviour — pruning is disabled. We will clean this up in 
 
 ## Step 8: Pruning — Cleaning Up Removed Resources
 
-Continuing from Step 6b — the cluster has both old and new named resources coexisting.
+Continuing from Step 7b — the cluster has both old and new named resources coexisting.
 This is exactly the scenario where pruning is needed.
 
 Check what ArgoCD considers out of sync:
@@ -745,24 +742,13 @@ Kubernetes resources continue running untouched. This is intentional:
 
 - Protects against accidental deletion of production workloads
 - Allows handing back control from ArgoCD to manual management without downtime
-- Destruction requires explicit intent
-```
-Without finalizer:  delete Application = stop managing (resources survive)
-With finalizer:     delete Application = stop managing + delete everything
-```
+- Destruction requires explicit intent — ArgoCD will never silently delete
+  your workloads
 
-To enable cascade delete, add the finalizer to the Application manifest:
-```yaml
-metadata:
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-```
-
-Without the finalizer, always clean up the namespace separately after deleting
-the Application:
+Always clean up the namespace separately after deleting the Application:
 ```bash
-kubectl delete -f guestbook-helm-app.yaml       # removes ArgoCD pointer
-kubectl delete namespace guestbook-helm          # removes deployed resources
+kubectl delete -f guestbook-helm-app.yaml    # removes ArgoCD pointer
+kubectl delete namespace guestbook-helm      # removes deployed resources
 ```
 
 ---
@@ -801,5 +787,41 @@ strategy to avoid downtime.
 
 ## What's Next
 
-**Demo-06: Automated Sync, Pruning & Self-Healing**
-Enable ArgoCD's automated sync policy so every Git commit automatically triggers a deployment without manual `argocd app sync`. Add pruning and self-healing to make ArgoCD enforce Git as the absolute source of truth — automatically reverting any manual cluster changes.
+**Demo-06: Kustomize with ArgoCD**
+Enable kustomize block in Application and show how ArgoCD detects Kustomize via kustomization.yaml
+
+## Commands Reference - ArgoCD CLI
+
+```bash
+# Login
+argocd login localhost:8080 --username admin --insecure
+
+# List all applications
+argocd app list
+
+# Check application status
+argocd app get guestbook-helm
+
+# Check diff between Git and cluster — run before every sync
+argocd app diff guestbook-helm
+
+# Manual sync
+argocd app sync guestbook-helm
+
+# Sync with prune — removes orphaned resources
+argocd app sync guestbook-helm --prune
+
+# Sync with replace — for immutable field changes
+argocd app sync guestbook-helm --replace
+
+# Sync with replace and force — last resort for stuck resources
+argocd app sync guestbook-helm --replace --force
+
+# Check repo connection
+argocd repo list
+
+# Add repo
+argocd repo add https://github.com/rselvantech/podinfo-config.git \
+  --username rselvantech \
+  --password '<GITHUB-PAT>'
+```
