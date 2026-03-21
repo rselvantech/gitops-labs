@@ -33,10 +33,13 @@ By the end of this demo you will have a clear end-to-end understanding of how Ar
 - Enable Pruning and observe ArgoCD delete a resource removed from Git
 - Enable Self-Healing and observe ArgoCD revert a manual `kubectl edit`
 
+**Building on Demo-04 — What Changes Here:**
+Demo-04 showed how ArgoCD authenticates to a private Git repo using repository credential secrets (argocd.argoproj.io/secret-type: repository). This demo introduces a second completely different secret type — the Docker registry secret (imagePullSecrets) which lets Kubernetes pull your private container image from Docker Hub. These solve different problems, have different schemas, and are created with different kubectl commands. See the Background section in Demo-04 for the full side-by-side comparison.
+This demo also establishes the three-repo GitOps structure — separating application manifests, ArgoCD Application CRDs, and platform config — that all subsequent demos build on.
 
 ## Prerequisites
 
-- ✅ Completed Demo-04 — private repository authentication mechanics understood
+- ✅ Completed Demo-04 — private repo access using HTTPS and SSH authentication mechanics understood
 - ✅ Completed `README-podinfo-setup.md` — three repos exist, podinfo image in Docker Hub
 - ✅ `rselvantech/podinfo-config` private repo exists and is empty
 - ✅ `rselvantech/argocd-config` private repo exists and is empty
@@ -605,6 +608,8 @@ git   podinfo-config  https://github.com/rselvantech/podinfo-config.git       fa
 - You should see `podinfo-config` with `CONNECTION STATUS: Successful`
 
 > You can also add repositories via the UI: **Settings → Repositories → Connect Repo**. The CLI approach is shown here because it is scriptable and infrastructure-as-code friendly — you can add it to your bootstrap scripts.
+
+>**Note:** `argocd repo add` and `adding repositories via the UI` both registers the repo in argoCD. Both  internally creates the same Kubernetes secret with the `argocd.argoproj.io/secret-type: repository` label that Demo-04 showed you how to create manually. The CLI and UI are just a convenience wrappers around the same underlying secret mechanics.
 
 ---
 
