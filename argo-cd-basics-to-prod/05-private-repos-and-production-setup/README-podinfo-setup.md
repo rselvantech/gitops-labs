@@ -1,4 +1,4 @@
-# Demo-04 (Part 1): Podinfo Setup & Three-Repo Strategy
+# Demo-05 (Part 1): Podinfo Setup & Three-Repo Strategy
 
 ## Overview
 
@@ -244,7 +244,7 @@ rselvantech/argocd-config        ← actual ArgoCD CRDs (ArgoCD reads this later
 ## Directory Structure
 
 ```
-04-argocd-sync-strategies/
+05-private-repos-and-production-setup/
 ├── README-podinfo-setup.md          ← This file
 ├── README.md                        ← Demo-04 Part 2 (GitOps workflow)
 ├── images/

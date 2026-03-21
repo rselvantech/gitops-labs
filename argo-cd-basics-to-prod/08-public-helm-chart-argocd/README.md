@@ -1,8 +1,8 @@
-# Demo-06: Deploying a Public Helm Chart with ArgoCD — Headlamp Kubernetes Dashboard
+# Demo-08: Deploying a Public Helm Chart with ArgoCD — Headlamp Kubernetes Dashboard
 
 ## Overview
 
-In Demo-05 we deployed a Helm chart sourced from a **Git repository**. In this demo
+In Demo-07 we deployed a Helm chart sourced from a **Git repository**. In this demo
 we deploy a Helm chart from a **public Helm repository** — no Git repo involved as
 the chart source.
 
@@ -43,7 +43,7 @@ Kubernetes Dashboard, and is the Kubernetes-recommended UI going forward.
 
 ## Prerequisites
 
-- ✅ Completed Demo-05 — Helm chart deployment with ArgoCD understood
+- ✅ Completed Demo-07 — Helm chart deployment with ArgoCD understood
 - ✅ ArgoCD running on minikube (`kubectl get pods -n argocd`)
 - ✅ ArgoCD CLI installed and logged in (`argocd login localhost:8080 --username admin --insecure`)
 - ✅ `kubectl` available in terminal
@@ -296,7 +296,7 @@ no accidental edits or deletions via the UI — correct for learning.
 ## Folder Structure
 
 ```
-06-public-helm-chart-argocd/
+08-public-helm-chart-argocd/
 ├── README.md
 ├── images/
 └── src/
@@ -335,9 +335,9 @@ spec:
       - CreateNamespace=true
 ```
 
-**Key differences from Demo-05 (Git-sourced chart):**
+**Key differences from Demo-07 (Git-sourced chart):**
 
-| Field | Demo-05 | Demo-06 |
+| Field | Demo-07 | Demo-08 |
 |---|---|---|
 | `repoURL` | Git URL | `https://kubernetes-sigs.github.io/headlamp/` |
 | `path` | `helm-guestbook` | **removed — not used with Helm repos** |
@@ -353,7 +353,7 @@ correctly, and `kube-system` is the conventional home for cluster infrastructure
 **Why the `helm.values` block?**
 The chart defaults `clusterRoleName` to `cluster-admin`. We override to `view`
 so the pod's ServiceAccount has read-only access. The `helm` block here works
-identically to Demo-05 — inline value overrides apply regardless of whether the
+identically to Demo-07 — inline value overrides apply regardless of whether the
 chart source is Git or a Helm repository.
 
 ---
@@ -361,7 +361,7 @@ chart source is Git or a Helm repository.
 ## Step 2: Apply and Verify Initial State
 
 ```bash
-cd 06-public-helm-chart-argocd/src
+cd 08-public-helm-chart-argocd/src
 kubectl apply -f headlamp-app.yaml
 ```
 
@@ -551,7 +551,7 @@ All namespaces
 argocd
 default
 kube-system
-guestbook-helm        ← from Demo-05 if not cleaned up
+guestbook-helm        ← from Demo-07 if not cleaned up
 ...
 ```
 
@@ -1071,7 +1071,7 @@ applying it.
 
 ## What's Next
 
-**Demo-07: ArgoCD Projects — Governance, Guardrails & RBAC**
+**Demo-09: ArgoCD Projects — Governance, Guardrails & RBAC**
 Introduce `AppProject` to enforce boundaries around source repositories, deployment
 destinations, allowed resource kinds, and application-level RBAC — all evaluated
 before sync begins.

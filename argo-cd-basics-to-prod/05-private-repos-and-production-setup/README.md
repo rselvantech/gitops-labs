@@ -1,4 +1,4 @@
-# Demo-04: Production GitOps — Private Repos, Secrets & Advanced Sync
+# Demo-05: Production GitOps — Private Repos, Secrets & Advanced Sync
 
 ## Demo Overview
 
@@ -331,7 +331,7 @@ rselvantech/podinfo            rselvantech/podinfo-config
 ## Directory Structure
 
 ```
-04-argocd-sync-strategies/
+05-private-repos-and-production-setup/
 ├── README-podinfo-setup.md          ← Part 1: Podinfo setup + 3-repo strategy
 ├── README.md                        ← This file (Part 2: GitOps workflow)
 ├── images/
@@ -383,7 +383,7 @@ EOF
 
 ```bash
 # Navigate to your gitops-labs src directory
-cd gitops-labs/argo-cd-basics-to-prod/04-argocd-sync-strategies/src/podinfo-config
+cd gitops-labs/argo-cd-basics-to-prod/05-private-repos-and-production-setup/src/podinfo-config
 
 # Initialise as a git repo
 git init
@@ -429,7 +429,7 @@ spec:
 > **`syncOptions: CreateNamespace=true`** — In Demo-03 we manually ran `kubectl create ns`. This sync option tells ArgoCD to create the destination namespace automatically if it does not exist. This is the production-aligned approach — your namespace becomes part of the GitOps-managed desired state.
 
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/04-argocd-sync-strategies/src/argocd-config
+cd gitops-labs/argo-cd-basics-to-prod/05-private-repos-and-production-setup/src/argocd-config
 
 git init
 git add .

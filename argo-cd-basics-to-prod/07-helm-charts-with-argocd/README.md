@@ -1,4 +1,4 @@
-# Demo-05: Deploying Helm Charts with ArgoCD
+# Demo-07: Deploying Helm Charts with ArgoCD
 
 ## Overview
 
@@ -91,7 +91,7 @@ Because ArgoCD generates manifests from templates at sync time, **what gets comp
 ## Folder Structure
 
 ```
-05-helm-charts-with-argocd/
+07-helm-charts-with-argocd/
 ├── README.md
 ├── images/
 └── src/
@@ -131,7 +131,7 @@ spec:
 
 **Key differences from Demo-03 (plain manifests):**
 
-| Field | Demo-03 (plain) | Demo-05 (Helm) |
+| Field | Demo-03 (plain) | Demo-07 (Helm) |
 |---|---|---|
 | `path` | `guestbook` | `helm-guestbook` |
 | `helm` block | not present | optional — only needed to customise Helm behaviour |
@@ -787,7 +787,7 @@ strategy to avoid downtime.
 
 ## What's Next
 
-**Demo-06: Kustomize with ArgoCD**
+**Kustomize with ArgoCD**
 Enable kustomize block in Application and show how ArgoCD detects Kustomize via kustomization.yaml
 
 ## Commands Reference - ArgoCD CLI
