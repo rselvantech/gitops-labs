@@ -104,7 +104,7 @@ repoURL:                →    finds Secret where url matches.
 All three methods produce the same Kubernetes Secret with the same label.
 The UI and CLI are just convenience wrappers around the same underlying object.
 
-```bash
+
 | Method | How | Best for |
 |---|---|---|
 | ArgoCD UI | Settings → Repositories → Connect Repo | Learning, one-off setup |
@@ -113,7 +113,6 @@ The UI and CLI are just convenience wrappers around the same underlying object.
 
 This demo practises all three so you understand what is actually created at
 the Kubernetes level — not just how to click through the UI.
-```
 
 ---
 
@@ -670,7 +669,7 @@ argocd repo list
 
 **Expected:**
 ```
-TYPE  NAME  REPO                                                           INSECURE  OCI  LFS  CREDS  STATUS     MESSAGE
+TYPE  NAME  REPO                                                            INSECURE  OCI  LFS  CREDS  STATUS     MESSAGE
 git         https://github.com/rselvantech/argocd-guestbook-config-private.git  false  false  false  false  Successful
 ```
 
