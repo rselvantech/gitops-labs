@@ -2,11 +2,18 @@
 
 ## Demo Overview
 
-This demo covers how ArgoCD is used in **production environments** where almost everything is private by default. We connect ArgoCD to a private Git repository, configure Kubernetes to pull images from a private container registry, and handle credentials and secrets in a GitOps-aligned way. Once the production setup is in place, we extend the same demo to explore ArgoCD's advanced sync features — Automated Sync, Pruning, and Self-Healing.
+Demo-04 covered how ArgoCD connects to private repositories — the credential mechanics, secret schemas, and URL matching. That foundation is now assumed.
+
+This demo builds on it in two parts. **Part A** establishes a full production GitOps setup — the three-repo structure, Docker registry secret for private
+image pulls, and a working end-to-end deployment using a private repo and private image.
+
+**Part B** introduces ArgoCD's three automation features — Automated Sync, Pruning, and Self-Healing — in the context of the production setup just
+built. This is a first look at these features. Demo-06 revisits them in depth with isolated step-by-step proof of each behaviour.
 
 By the end of this demo you will have a clear end-to-end understanding of how ArgoCD operates securely and predictably in real projects — not just demos.
 
 > **Prerequisite:** Complete `README-podinfo-setup.md` first. This README assumes your three repos exist, your podinfo image is in Docker Hub, and you are familiar with podinfo's UI and endpoints.
+
 
 **What you'll learn:**
 - How to authenticate ArgoCD with a private GitHub repository
@@ -26,14 +33,16 @@ By the end of this demo you will have a clear end-to-end understanding of how Ar
 - Enable Pruning and observe ArgoCD delete a resource removed from Git
 - Enable Self-Healing and observe ArgoCD revert a manual `kubectl edit`
 
+
 ## Prerequisites
 
+- ✅ Completed Demo-04 — private repository authentication mechanics understood
 - ✅ Completed `README-podinfo-setup.md` — three repos exist, podinfo image in Docker Hub
 - ✅ `rselvantech/podinfo-config` private repo exists and is empty
 - ✅ `rselvantech/argocd-config` private repo exists and is empty
 - ✅ Docker image `rselvantech/podinfo:v1.0.0` pushed to private Docker Hub
-- ✅ ArgoCD running on minikube with port-forwarding active on `localhost:8080`
-- ✅ ArgoCD CLI (`argocd`) installed
+- ✅ ArgoCD running on minikube
+- ✅ ArgoCD CLI installed
 
 **Verify Prerequisites:**
 
@@ -102,6 +111,41 @@ Separating these concerns means:
 
 ---
 
+### Why We Version-Control the Application CRD — and Why `kubectl apply` Is Still Needed
+
+The Application CRD defines what ArgoCD deploys, where, and how. Like any
+infrastructure configuration it belongs in Git:
+
+- **Auditability** — every change to what ArgoCD deploys is recorded with
+  who changed it, when, and why
+- **Reproducibility** — if your ArgoCD instance is lost or reinstalled,
+  reapplying the CRDs from Git restores everything — no manual recreation
+- **GitOps consistency** — your entire deployment setup, not just the
+  application manifests, lives in Git as the single source of truth
+
+**But why do we still need `kubectl apply` after pushing to Git?**
+
+This is the important nuance. Even with automated sync enabled on
+`podinfo-app`, ArgoCD watches the **source repo** (`podinfo-config`) —
+not the repo where the Application CRD itself lives (`argocd-config`).
+Pushing the Application CRD to `argocd-config` does not trigger ArgoCD
+to pick it up automatically. You must still apply it manually.
+```
+podinfo-config   ← ArgoCD watches this (automated sync applies changes here)
+argocd-config    ← ArgoCD does NOT watch this (kubectl apply required)
+```
+
+This is the remaining manual step in our GitOps setup. It goes away in
+**Demo-11 (App-of-Apps)** — where a parent Application watches
+`argocd-config` and auto-syncs Application CRD changes automatically.
+Until then, the pattern for every Application CRD change is:
+```
+1. Push to argocd-config  →  version-controlled, auditable, recoverable
+2. kubectl apply          →  actually registers it with ArgoCD
+```
+
+Both steps are intentional and necessary at this stage.
+
 ### GitHub Access Credentials — PAT vs SSH Keys vs Deploy Keys
 
 Understanding which credential type to use and when is a production-critical skill.
@@ -113,6 +157,15 @@ Understanding which credential type to use and when is a production-critical ski
 | **Fine-grained PAT** | A user account | Specific repos + specific permissions | Tighter human access |
 | **Deploy Key** | A repository | One repo only (1:1) | GitOps tools (ArgoCD), CI systems |
 | **GitHub App** | An organisation | Many repos with fine-grained control | Enterprise CI systems |
+
+> **SSH Key vs Deploy Key — same technology, different scope:**
+> A deploy key is technically an SSH key pair. The distinction is where
+> the public key is registered. An SSH key registered to your GitHub user
+> account gives access to all your repos. The same key registered as a
+> deploy key on a specific repository gives access to that repo only —
+> with no user account dependency. In this demo we generate an SSH key
+> pair and register it as a deploy key — the recommended approach for
+> ArgoCD in production.
 
 **The rule for ArgoCD — always use Deploy Keys in production:**
 
@@ -133,7 +186,7 @@ If ArgoCD manages 10 applications across 10 repositories, you create 10 deploy k
 - These must be separate credentials. Do not give ArgoCD write access because it is convenient.
 
 ---
-## Background: Two Different Secret Types — Both Used in This Demo
+### Background: Two Different Secret Types — Both Used in This Demo
 
 When working with GitOps on Kubernetes with a private repository and a private
 container registry (as in this demo), two completely different kinds of secrets
@@ -499,8 +552,8 @@ kubectl create ns podinfo
 kubectl create secret docker-registry dockerhub-secret \
   --docker-server=https://index.docker.io/v1/ \
   --docker-username=rselvantech \
-  --docker-password=<DOCKERHUB_TOKEN> \
-  --docker-email=<your-email> \
+  --docker-password='<your-dockerhub-access-token>' \
+  --docker-email=<your-email> \                        # <---email is optional
   --namespace=podinfo
 ```
 
@@ -953,22 +1006,6 @@ Even in a private repository, secrets must not be committed to Git. Base64 encod
 
 ---
 
-## Next Steps
-
-**Demo-05: Kustomize with ArgoCD**
-- Use the `kustomize/` directory from your podinfo fork
-- Deploy podinfo to `dev`, `staging`, and `prod` namespaces with different configs
-- See `PODINFO_UI_COLOR` visually differentiate environments
-- Understand how Kustomize base + overlays integrates with ArgoCD
-
-**Explore on your own (optional):**
-- Run `argocd app diff podinfo` to see what ArgoCD sees as the difference between Git and cluster
-- Run `argocd app history podinfo` to view the full sync history
-- Try enabling pruning without automated sync and confirm it has no effect
-- Try `kubectl scale deployment podinfo --replicas=5 -n podinfo` with self-healing enabled — observe how fast ArgoCD reverts it
-
----
-
 ## Troubleshooting
 
 **`ImagePullBackOff` on pods:**
@@ -1024,3 +1061,11 @@ kubectl get app podinfo -n argocd -o yaml | grep prune
 # Force refresh to trigger immediate check
 argocd app refresh podinfo
 ```
+
+## What's Next
+
+**Demo-06: Sync, Pruning & Self-Healing**
+This demo introduced Automated Sync, Pruning, and Self-Healing as part of the
+production setup. Demo-06 revisits these three features in isolation — starting
+from scratch with automation stripped off and building back up step by step,
+proving each behaviour live before moving to the next.

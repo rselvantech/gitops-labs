@@ -682,6 +682,15 @@ SSH is the recommended method for production. Deploy keys have no user account
 dependency — if the person who created the PAT leaves the organisation, the
 HTTPS authentication breaks. SSH deploy keys are repository-level, not user-level.
 
+> **SSH Key vs Deploy Key — same technology, different scope:**
+> A deploy key is technically an SSH key pair. The distinction is where
+> the public key is registered. An SSH key registered to your GitHub user
+> account gives access to all your repos. The same key registered as a
+> deploy key on a specific repository gives access to that repo only —
+> with no user account dependency. In this demo we generate an SSH key
+> pair and register it as a deploy key — the recommended approach for
+> ArgoCD in production.
+
 ### 6a: Generate SSH key pair
 
 ```bash
