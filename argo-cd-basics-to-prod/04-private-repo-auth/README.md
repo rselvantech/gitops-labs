@@ -49,51 +49,76 @@ this foundation.
 **Verify prerequisites:**
 ```bash
 kubectl get pods -n argocd
-argocd app list          # should show guestbook from Demo-03
-argocd repo list         # should show no repos registered (Demo-03 used a public repo)
+argocd app list          # shows any applications currently deployed
+argocd repo list         # shows any repos registered (Demo-03 used a public repo and it does not require repo registration)
 ```
 
 ---
 
-## Background: Two Different Secret Types — Do Not Confuse Them
+## Concepts
 
-This is the most important concept to get right before this demo. ArgoCD GitOps
-involves two completely different kinds of secrets, created differently, with
-different schemas, for different purposes:
+### Public vs Private — What the Difference Means for ArgoCD
 
-```
-Secret type              Label / Type                      Purpose
-─────────────────────────────────────────────────────────────────────────────
-ArgoCD repository        argocd.argoproj.io/               Lets ArgoCD CLONE
-credential               secret-type: repository           your Git repo to
-(this demo)              (in argocd namespace)             read manifests
+A **public repository** allows unauthenticated access. Anyone can clone it
+without providing credentials. This is why Demo-03 worked without any setup —
+`argoproj/argocd-example-apps` is public and ArgoCD cloned it anonymously.
 
-Docker registry          type:                             Lets Kubernetes PULL
-secret                   kubernetes.io/                    your container image
-(Demo-05)                dockerconfigjson                  from a private registry
-                         (in app namespace)
-```
-
-**They solve different problems at different layers:**
+A **private repository** rejects unauthenticated requests with a 401/403 error.
+ArgoCD has no way to know which credentials to use unless you explicitly provide
+them. This is exactly what causes the error you will see in Step 2:
 
 ```
-Git repo (private)                     Container registry (private)
-      │                                          │
-      │ ArgoCD needs to READ manifests           │ Kubernetes needs to PULL image
-      │                                          │
-      ▼                                          ▼
-argocd.argoproj.io/                    kubernetes.io/
-secret-type: repository                dockerconfigjson
-(ArgoCD reads this)                    (kubelet reads this via imagePullSecrets)
+Failed to load target state
+authentication required
 ```
 
-Demo-05 covers the Docker registry secret. This demo covers the ArgoCD repository
-credential. They are created with different `kubectl` commands, stored in different
-namespaces, and consumed by entirely different components.
+ArgoCD tried to clone the private repo, GitHub rejected the request, and ArgoCD
+reported the failure. Nothing gets deployed until credentials are configured.
 
 ---
 
-## Background: How ArgoCD Discovers Repository Credentials
+### What "Connect a Repository" Means in ArgoCD
+
+It  means creating a **Kubernetes Secret** in the `argocd` namespace that contains:
+- The repository URL
+- The credentials to authenticate with it
+
+ArgoCD continuously scans the `argocd` namespace for secrets with a specific
+label. When it finds one, it uses the URL to match it against the `repoURL` in
+your Application CRD and uses the credentials to clone the repo at sync time.
+
+Nothing is stored in ArgoCD's own database. Registration is entirely Kubernetes
+secret based.
+
+```
+Application CRD              ArgoCD scans argocd namespace
+─────────────────            ──────────────────────────────
+repoURL:                →    finds Secret where url matches.
+  github.com/org/repo        uses credentials from that Secret.
+                             clones the repo successfully.
+```
+---
+
+### Three Methods to Connect a Repository
+
+All three methods produce the same Kubernetes Secret with the same label.
+The UI and CLI are just convenience wrappers around the same underlying object.
+
+```bash
+| Method | How | Best for |
+|---|---|---|
+| ArgoCD UI | Settings → Repositories → Connect Repo | Learning, one-off setup |
+| `kubectl create secret` + `kubectl label` | Two imperative commands | Understanding the mechanics |
+| `argocd repo add` | Single CLI command | Scripted or quick setup |
+
+This demo practises all three so you understand what is actually created at
+the Kubernetes level — not just how to click through the UI.
+```
+
+---
+
+
+## How ArgoCD Discovers Repository Credentials
 
 ArgoCD does not have its own credential database. It discovers credentials by
 looking for Kubernetes secrets in the `argocd` namespace with a specific label.
@@ -126,7 +151,7 @@ an HTTPS `repoURL`. If you switch to SSH, the `repoURL` must change to SSH forma
 
 ---
 
-## Background: Three Secret Label Types
+## Three Secret Label Types
 
 ArgoCD uses three different label values, each serving a different purpose:
 
@@ -137,11 +162,11 @@ ArgoCD uses three different label values, each serving a different purpose:
 | `cluster` | Credentials for a remote Kubernetes cluster | Cluster API URL |
 
 This demo uses `repository` (single repo). See the credential templates section
-below for when `repo-creds` is the better choice.
+below for when `repo-creds` is the better choice.Using credentials for a remote Kubernetes cluster will be covered in a later demo
 
 ---
 
-## Background: Credential Templates (`repo-creds`) — The Production Pattern
+## Credential Templates (`repo-creds`) — The Production Pattern
 
 In this demo, one secret covers one repository. In production, you often have
 many repositories under the same GitHub organisation. Creating one secret per
@@ -179,7 +204,7 @@ the mechanics before the abstraction.
 
 ---
 
-## Background: Three Ways to Configure Credentials
+## Three Ways to Configure Repo Credentials
 
 | Method | How | When to use |
 |---|---|---|
@@ -198,6 +223,27 @@ a PAT or SSH key and push it, the credential is exposed. The `kubectl create sec
 imperative command keeps the sensitive value in your terminal only — it never
 touches a file. This is the correct approach for secrets.
 
+### Refresh vs Sync — What Is the Difference
+
+```bash
+argocd app get guestbook-private --refresh      #Refresh
+argocd app sync guestbook-private               #Sync
+```
+
+**Refresh** tells ArgoCD to immediately re-read the source repository and
+compare the latest Git state against the live cluster state. It updates the
+sync status (Synced / OutOfSync) but does **not** apply any changes to the
+cluster. Use refresh when you want ArgoCD to detect changes without deploying.
+
+**Sync** applies the Git state to the cluster. It implicitly performs a refresh
+first to get the latest state, then applies any differences. Use sync when you
+want changes deployed.
+```
+Refresh → detects changes, updates status, does NOT apply
+Sync    → detects changes, updates status, AND applies
+```
+
+
 ---
 
 ## Folder Structure
@@ -213,7 +259,7 @@ The credential secrets are **never stored in files** — they are created impera
 and live only in the `argocd` namespace in your cluster.
 
 **The private repository** (`argocd-guestbook-config-private`) is a separate GitHub
-repo you create in Step 1. It is not part of `gitops-labs` — it is the private
+repo you create in Step 1. It is not part of the currrent repo`gitops-labs` — it is the private
 source repo that ArgoCD reads from.
 
 ```
@@ -263,7 +309,7 @@ spec:
     spec:
       containers:
       - name: guestbook-ui
-        image: gcr.io/heptio-images/ks-guestbook-demo:0.2
+        image: gcr.io/google-samples/gb-frontend:v5
         ports:
         - containerPort: 80
 ```
@@ -310,7 +356,7 @@ spec:
   source:
     repoURL: https://github.com/rselvantech/argocd-guestbook-config-private.git
     targetRevision: HEAD
-    path: guestbook
+    path: guestbook`
   destination:
     server: https://kubernetes.default.svc
     namespace: guestbook-private
@@ -319,33 +365,52 @@ spec:
       - CreateNamespace=true
 ```
 
-Create the namespace and apply:
+**Create the namespace and apply:**
 ```bash
 kubectl apply -f src/guestbook-private-app.yaml
 ```
 
-Expected:
+**Expected:**
 ```
 application.argoproj.io/guestbook-private created
 ```
 
-Check status immediately:
+**Check status immediately:**
 ```bash
 argocd app get guestbook-private
 ```
 
-Expected — authentication error:
+**Expected — authentication error:**
 ```
-CONDITION   MESSAGE
-CompError   rpc error: Failed to load target state:
-            failed to load app list: authentication required
+Name:               argocd/guestbook-private
+Project:            default
+Server:             https://kubernetes.default.svc
+Namespace:          guestbook-private
+URL:                https://argocd.example.com/applications/guestbook-private
+Source:
+- Repo:             https://github.com/rselvantech/argocd-guestbook-config-private.git
+  Target:           HEAD
+  Path:             guestbook
+SyncWindow:         Sync Allowed
+Sync Policy:        Manual
+Sync Status:        Unknown
+Health Status:      Healthy
+
+CONDITION        MESSAGE                                                                                                                                                                           LAST TRANSITION
+ComparisonError  Failed to load target state: failed to generate manifest for source 1 of 1: rpc error: code = Unknown desc = failed to list refs: authentication required: Repository not found.  2026-03-22 04:14:32 -0400 EDT
 ```
 
-In the ArgoCD UI, clicking on `guestbook-private` shows the error:
+In the ArgoCD UI, select `guestbook-private` Application and click `1 Error` it shows the same `ComparisonError` error printed in CLI
 ```
-Failed to load target state
-authentication required
+ComparisonError: Failed to load target state: failed to generate manifest for source 1 of 1: rpc error: code = Unknown desc = failed to list refs: authentication required: Repository not found.
 ```
+
+**The error proves the point:**
+
+- ArgoCD found the Application CRD ✅
+- ArgoCD tried to clone the private repo ✅
+- GitHub rejected the unauthenticated request ✅
+- Result: authentication required ✅
 
 This is the correct behaviour. ArgoCD tried to clone the private repo, received
 a 401/403 from GitHub, and reported the error. No manifests were read. No
@@ -373,9 +438,10 @@ Settings (top right avatar)
 Fill in:
 - **Token name:** `argocd-guestbook-private-https`
 - **Resource owner:** your account
+- **Expiration:** select any 7/30/60/90/ days
 - **Repository access:** Only selected repositories →
   select `argocd-guestbook-config-private`
-- **Permissions → Repository permissions → Contents:** Read-only
+- **Permissions → Add permissions → select Contents:** Read-only
 
 Click **Generate token**. Copy it immediately — GitHub shows it only once.
 
@@ -406,26 +472,50 @@ Expected: **Connection Status: Successful**
 ### 4b: Verify the application syncs
 
 ```bash
+# Check current application status
 argocd app get guestbook-private
+
+# Trigger refresh to get status update immediately without waiting for poll cycle
+argocd app get guestbook-private --refresh
 ```
 
-Expected — error is gone, app is syncing:
+**Expected — error is gone, app is syncing:**
 ```
-Sync Status:   OutOfSync (or Synced if auto-detected)
-Health Status: Missing → Healthy after sync
+Name:               argocd/guestbook-private
+Project:            default
+Server:             https://kubernetes.default.svc
+Namespace:          guestbook-private
+URL:                https://argocd.example.com/applications/guestbook-private
+Source:
+- Repo:             https://github.com/rselvantech/argocd-guestbook-config-private.git
+  Target:           HEAD
+  Path:             guestbook
+SyncWindow:         Sync Allowed
+Sync Policy:        Manual
+Sync Status:        OutOfSync from HEAD (bd485ae)
+Health Status:      Missing
+
+GROUP  KIND        NAMESPACE          NAME          STATUS     HEALTH   HOOK  MESSAGE
+       Service     guestbook-private  guestbook-ui  OutOfSync  Missing        
+apps   Deployment  guestbook-private  guestbook-ui  OutOfSync  Missing
 ```
 
-Trigger sync:
-```bash
-argocd app sync guestbook-private
-```
-
-Verify pods running:
+**Check pods - not running yet (app is still `OutOfSync`)**
 ```bash
 kubectl get pods -n guestbook-private
 ```
 
-Expected:
+**Trigger sync:**
+```bash
+argocd app sync guestbook-private
+```
+
+**Verify pods running now:**
+```bash
+kubectl get pods -n guestbook-private
+```
+
+**Expected:**
 ```
 NAME                            READY   STATUS    RESTARTS
 guestbook-ui-xxxxxxxxx-xxxxx    1/1     Running   0
@@ -439,18 +529,18 @@ The ArgoCD UI created a Kubernetes secret behind the scenes:
 kubectl get secrets -n argocd | grep repo
 ```
 
-Expected — a secret was created:
+**Expected — a secret was created:**
 ```
 repo-xxxxxxxxxxxxxxxxxx    Opaque    4    1m
 ```
 
-Describe it to see the schema:
+**Describe it to see the schema:**
 ```bash
-kubectl describe secret repo-xxxxxxxxxxxxxxxxxx -n argocd
+kubectl describe secrets repo-xxxxxxxxxxxxxxxxxx -n argocd
 ```
 
-Expected — note the label and data keys:
-```
+**Expected — note the label and data keys:**
+```bash
 Labels:  argocd.argoproj.io/secret-type=repository
 Data:
   password:  40 bytes     ← your PAT
@@ -475,9 +565,9 @@ kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=repository
 kubectl delete secret <secret-name> -n argocd
 ```
 
-Verify the error returns:
+**Verify the error returns:**
 ```bash
-argocd app get guestbook-private
+argocd app get guestbook-private --refresh
 # Should show: authentication required
 ```
 
@@ -489,17 +579,17 @@ kubectl create secret generic guestbook-private-https \
   --from-literal=type=git \
   --from-literal=url=https://github.com/rselvantech/argocd-guestbook-config-private.git \
   --from-literal=username=rselvantech \
-  --from-literal=password=<your-PAT>
+  --from-literal=password='<your-PAT>'
 ```
 
-Expected:
+**Expected:**
 ```
 secret/guestbook-private-https created
 ```
 
 Check ArgoCD status — still shows auth error:
 ```bash
-argocd app get guestbook-private
+argocd app get guestbook-private --refresh
 # Still: authentication required
 ```
 
@@ -514,25 +604,34 @@ kubectl label secret guestbook-private-https \
   argocd.argoproj.io/secret-type=repository
 ```
 
-Expected:
+**Expected:**
 ```
 secret/guestbook-private-https labeled
 ```
 
-Now check ArgoCD — within seconds the error disappears:
+**Now check ArgoCD — within seconds the error disappears:**
 ```bash
-argocd app get guestbook-private
+argocd app get guestbook-private --refresh
 # Should show: Synced / Healthy
 ```
 
+**check label & url:**
 ```bash
-# Verify label is present
-kubectl describe secret guestbook-private-https -n argocd | grep -A2 Labels
+kubectl describe secret guestbook-private-https -n argocd | grep "Labels"
+
+kubectl get secrets -n argocd guestbook-private-https -o jsonpath='{.data.url}' | base64 -d
 ```
 
-Expected:
+**Expected:**
 ```
 Labels: argocd.argoproj.io/secret-type=repository
+
+https://github.com/argoproj/argocd-example-apps.git% 
+```
+
+**Verify repo showing in UI with `connection status=Successful`**
+```bash
+Check UI: Settings → Repositories
 ```
 
 > **Why two steps?** `kubectl create secret` does not support arbitrary label
@@ -540,6 +639,19 @@ Labels: argocd.argoproj.io/secret-type=repository
 > with `kubectl label`. This is normal — it is not a workaround.
 
 ### 5d: Verify via `argocd` CLI (third method)
+
+
+**Delete the imperatively created above secret:**
+
+```bash
+kubectl delete secrets -n argocd guestbook-private-https
+```
+
+**Verify the error returns:**
+```bash
+argocd app get guestbook-private --refresh
+# Should show: authentication required
+```
 
 The `argocd repo add` command is a single-step alternative that handles both
 secret creation and labelling internally:
@@ -551,16 +663,31 @@ argocd repo add https://github.com/rselvantech/argocd-guestbook-config-private.g
   --password <your-PAT>
 ```
 
+**Verify repo is registered:**
 ```bash
-# Verify repo is registered
 argocd repo list
 ```
 
-Expected:
+**Expected:**
 ```
 TYPE  NAME  REPO                                                           INSECURE  OCI  LFS  CREDS  STATUS     MESSAGE
 git         https://github.com/rselvantech/argocd-guestbook-config-private.git  false  false  false  false  Successful
 ```
+
+**check secret created and verify its url:**
+```bash
+kubectl get secrets -n argocd | grep "repo"
+
+kubectl get secrets -n argocd <repo-XXXXXX> -o jsonpath='{.data.url}' | base64 -d
+```
+
+**Expected:**
+```
+repo-196986226                  Opaque               4      2m17s
+
+https://github.com/rselvantech/argocd-guestbook-config-private.git% 
+```
+
 
 ---
 
@@ -573,16 +700,17 @@ HTTPS authentication breaks. SSH deploy keys are repository-level, not user-leve
 ### 6a: Generate SSH key pair
 
 ```bash
-mkdir -p .ssh
-ssh-keygen -t ed25519 \
-  -f .ssh/argocd-deploy-key \
-  -N ""                        # empty passphrase — required for automated use
+mkdir -p ~/.ssh
+
+ssh-keygen -t ed25519 \    # type    — algorithm: ed25519
+           -f ~/.ssh/argocd-deploy-key \    # file     — output filename
+           -N ""           # new passphrase — empty (for automated use)
 ```
 
 Expected output:
 ```
-Your identification has been saved in .ssh/argocd-deploy-key
-Your public key has been saved in .ssh/argocd-deploy-key.pub
+Your identification has been saved in /home/xxxx/.ssh/argocd-deploy-key
+Your public key has been saved in /home/xxxx/.ssh/argocd-deploy-key.pub
 ```
 
 Two files created:
@@ -593,14 +721,14 @@ Two files created:
 
 Print the public key:
 ```bash
-cat .ssh/argocd-deploy-key.pub
+cat ~/.ssh/argocd-deploy-key.pub
 ```
 
-Copy the full output. In GitHub:
-```
+**Copy the full output and add it In GitHub:**
+```bash
 argocd-guestbook-config-private repo
   → Settings → Deploy keys → Add deploy key
-    Title: argocd-deploy-key
+    Title: argocd-guestbook-private-deploy-key
     Key: paste the public key contents
     Allow write access: ❌ unchecked (read-only)
   → Add key
@@ -629,41 +757,41 @@ are no SSH credentials yet. This proves the URL-matching requirement.
 ### 6d: Delete the HTTPS credential
 
 ```bash
-kubectl delete secret guestbook-private-https -n argocd
+kubectl delete secrets repo-196986226 -n argocd
 # Or disconnect from UI: Settings → Repositories → Disconnect
 ```
 
 ### 6e: Configure SSH via ArgoCD UI
 
-In ArgoCD UI:
-```
-Settings → Repositories → Connect Repo
-  Connection Method: SSH
-  Repository URL: git@github.com:rselvantech/argocd-guestbook-config-private.git
-  SSH Private Key Data: paste the contents of .ssh/argocd-deploy-key
-→ Connect
+**Print private key to paste:**
+```bash
+cat ~/.ssh/argocd-deploy-key    #private key
 ```
 
-Print private key to paste:
+**Copy the full output and add it In GitHub:**
 ```bash
-cat .ssh/argocd-deploy-key
+Settings → Repositories → Connect Repo
+  "Connection Method": SSH
+  "Repository URL": git@github.com:rselvantech/argocd-guestbook-config-private.git
+  "SSH Private Key Data": paste the contents of `/home/xxxx/.ssh/argocd-deploy-key`    
+→ Connect
 ```
 
 Expected: **Connection Status: Successful**
 
-Verify application recovers:
+**Verify application recovers:**
 ```bash
-argocd app get guestbook-private
+argocd app get guestbook-private --refresh
 # Should show: Synced / Healthy
 ```
 
 Inspect the SSH secret created by the UI:
 ```bash
 kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=repository
-kubectl describe secret <ssh-secret-name> -n argocd
+kubectl describe secrets <ssh-secret-name> -n argocd
 ```
 
-Expected — different schema from HTTPS:
+**Expected — different schema from HTTPS:**
 ```
 Labels:  argocd.argoproj.io/secret-type=repository
 Data:
@@ -680,13 +808,13 @@ Data:
 
 ```bash
 kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=repository
-kubectl delete secret <secret-name> -n argocd
+kubectl delete secrets <secret-name> -n argocd
 ```
 
 ### 7b: Store private key in a variable
 
 ```bash
-private_key=$(cat .ssh/argocd-deploy-key)
+private_key=$(cat ~/.ssh/argocd-deploy-key)
 ```
 
 ### 7c: Create the SSH secret
@@ -709,11 +837,14 @@ kubectl label secret guestbook-private-ssh \
 
 Verify application is synced:
 ```bash
-argocd app get guestbook-private
+argocd app get guestbook-private --refresh
 kubectl get pods -n guestbook-private
 ```
 
-Expected: app `Synced` and `Healthy`, pod `Running`.
+Expected: 
+- app `Synced` and `Healthy`.
+- check `Repo` url changed to new one
+- pod `Running`.
 
 ---
 
@@ -733,7 +864,7 @@ kubectl delete app guestbook-private -n argocd
 kubectl delete namespace guestbook-private
 
 # 4. Delete local SSH key files
-rm -rf .ssh/argocd-deploy-key .ssh/argocd-deploy-key.pub
+rm -rf ~/.ssh/argocd-deploy-key ~/.ssh/argocd-deploy-key.pub
 ```
 
 In GitHub:
@@ -759,34 +890,8 @@ kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=repository
 
 ---
 
-## Verify Final State
-
-```bash
-# ArgoCD running and healthy
-kubectl get pods -n argocd
-
-# Demo-03 guestbook still running (this demo did not touch it)
-argocd app get guestbook
-kubectl get pods -n guestbook
-
-# No repository credentials registered
-argocd repo list
-
-# No leftover secrets from this demo
-kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=repository
-```
-
----
-
 ## Key Concepts Summary
 
-**Two secret types — never confuse them**
-
-ArgoCD repository credentials (`secret-type: repository`) let ArgoCD clone Git
-repos to read manifests. Docker registry secrets (`type: kubernetes.io/dockerconfigjson`)
-let Kubernetes pull container images. They are created differently, stored in
-different namespaces, and consumed by different components. Demo-05 covers the
-Docker registry secret.
 
 **The mandatory label is non-negotiable**
 
@@ -875,7 +980,7 @@ argocd repo add https://github.com/org/repo.git \
 
 # Register via argocd CLI (SSH)
 argocd repo add git@github.com:org/repo.git \
-  --ssh-private-key-path .ssh/argocd-deploy-key
+  --ssh-private-key-path ~/.ssh/argocd-deploy-key
 
 # List registered repos
 argocd repo list
@@ -885,6 +990,14 @@ argocd repo rm https://github.com/org/repo.git
 
 # Generate SSH key pair
 ssh-keygen -t ed25519 -f .ssh/argocd-deploy-key -N ""
+
+# Refresh — re-read repo and update sync status immediately
+# (does not apply changes to cluster)
+argocd app get guestbook-private --refresh
+
+# Sync — apply latest Git state to cluster
+# (implicitly refreshes first, then applies)
+argocd app sync guestbook-private
 ```
 
 ---

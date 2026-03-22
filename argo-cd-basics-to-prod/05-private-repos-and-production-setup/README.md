@@ -133,6 +133,50 @@ If ArgoCD manages 10 applications across 10 repositories, you create 10 deploy k
 - These must be separate credentials. Do not give ArgoCD write access because it is convenient.
 
 ---
+## Background: Two Different Secret Types — Both Used in This Demo
+
+When working with GitOps on Kubernetes with a private repository and a private
+container registry (as in this demo), two completely different kinds of secrets
+are involved:
+
+- **ArgoCD repository credential** — ArgoCD-specific, lets ArgoCD clone your
+  private Git repo to read manifests
+- **Docker registry pull secret** — Kubernetes-native, lets the kubelet pull
+  your private container image from the registry
+
+
+```
+Secret type              Label / Type                      Purpose
+─────────────────────────────────────────────────────────────────────────────
+ArgoCD repository        argocd.argoproj.io/               Lets ArgoCD CLONE
+credential               secret-type: repository           your Git repo to
+                         (in argocd namespace)             read manifests
+
+Docker registry          type:                             Lets Kubernetes PULL
+secret                   kubernetes.io/                    your container image                    dockerconfigjson                  from a private registry
+                         (in app namespace)
+```
+
+**They solve different problems at different layers:**
+
+```
+Git repo (private)                     Container registry (private)
+      │                                          │
+      │ ArgoCD needs to READ manifests           │ Kubernetes needs to PULL image
+      │                                          │
+      ▼                                          ▼
+argocd.argoproj.io/                    kubernetes.io/
+secret-type: repository                dockerconfigjson
+(ArgoCD reads this)                    (kubelet reads this via imagePullSecrets)
+```
+
+Demo-04 covered ArgoCD repository credentials in detail. This demo introduces
+the Docker registry pull secret and uses both. They are created with different
+`kubectl` commands and methods, stored in different namespaces, and consumed by entirely
+different components.
+
+
+---
 
 ### Secrets Security Hierarchy
 
