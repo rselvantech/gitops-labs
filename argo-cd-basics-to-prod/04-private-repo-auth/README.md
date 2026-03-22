@@ -114,10 +114,16 @@ The UI and CLI are just convenience wrappers around the same underlying object.
 This demo practises all three so you understand what is actually created at
 the Kubernetes level — not just how to click through the UI.
 
+**Why not use a declarative YAML file for credentials?**
+
+Never commit secrets to a Git repository. If you write a YAML file containing
+a PAT or SSH key and push it, the credential is exposed. The `kubectl create secret`
+imperative command keeps the sensitive value in your terminal only — it never
+touches a file. This is the correct approach for secrets.
+
 ---
 
-
-## How ArgoCD Discovers Repository Credentials
+### How ArgoCD Discovers Repository Credentials
 
 ArgoCD does not have its own credential database. It discovers credentials by
 looking for Kubernetes secrets in the `argocd` namespace with a specific label.
@@ -150,7 +156,7 @@ an HTTPS `repoURL`. If you switch to SSH, the `repoURL` must change to SSH forma
 
 ---
 
-## Three Secret Label Types
+### Three Secret Label Types
 
 ArgoCD uses three different label values, each serving a different purpose:
 
@@ -165,7 +171,7 @@ below for when `repo-creds` is the better choice.Using credentials for a remote 
 
 ---
 
-## Credential Templates (`repo-creds`) — The Production Pattern
+### Credential Templates (`repo-creds`) — The Production Pattern
 
 In this demo, one secret covers one repository. In production, you often have
 many repositories under the same GitHub organisation. Creating one secret per
@@ -203,25 +209,6 @@ the mechanics before the abstraction.
 
 ---
 
-## Three Ways to Configure Repo Credentials
-
-| Method | How | When to use |
-|---|---|---|
-| ArgoCD UI | Settings → Repositories → Connect Repo | Learning, one-off setup |
-| `kubectl create secret` + `kubectl label` | Two imperative commands | Any non-UI setup |
-| `argocd repo add` | CLI command | Quick scripted setup |
-
-All three methods create the same Kubernetes secret with the same label. The UI
-and `argocd repo add` just wrap the `kubectl` operations. In this demo we practice
-all three so you understand what is actually happening at the secret level.
-
-**Why not use a declarative YAML file for credentials?**
-
-Never commit secrets to a Git repository. If you write a YAML file containing
-a PAT or SSH key and push it, the credential is exposed. The `kubectl create secret`
-imperative command keeps the sensitive value in your terminal only — it never
-touches a file. This is the correct approach for secrets.
-
 ### Refresh vs Sync — What Is the Difference
 
 ```bash
@@ -241,7 +228,6 @@ want changes deployed.
 Refresh → detects changes, updates status, does NOT apply
 Sync    → detects changes, updates status, AND applies
 ```
-
 
 ---
 
@@ -355,7 +341,7 @@ spec:
   source:
     repoURL: https://github.com/rselvantech/argocd-guestbook-config-private.git
     targetRevision: HEAD
-    path: guestbook`
+    path: guestbook
   destination:
     server: https://kubernetes.default.svc
     namespace: guestbook-private
@@ -625,7 +611,7 @@ kubectl get secrets -n argocd guestbook-private-https -o jsonpath='{.data.url}' 
 ```
 Labels: argocd.argoproj.io/secret-type=repository
 
-https://github.com/argoproj/argocd-example-apps.git% 
+https://github.com/rselvantech/argocd-guestbook-config-private.git% 
 ```
 
 **Verify repo showing in UI with `connection status=Successful`**
