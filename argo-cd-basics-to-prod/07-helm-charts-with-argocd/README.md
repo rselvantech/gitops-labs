@@ -36,7 +36,9 @@ argocd app list
 
 ---
 
-## Background: Helm Chart Structure
+## Concepts
+
+### Helm Chart Structure
 
 Before deploying, understand what a Helm chart looks like. The `helm-guestbook` chart used in this demo has this structure:
 

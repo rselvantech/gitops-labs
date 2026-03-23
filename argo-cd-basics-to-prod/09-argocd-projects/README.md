@@ -29,29 +29,84 @@ are real and enforced.
 
 ## Prerequisites
 
-- ✅ Completed Demo-05 — `podinfo-config` and `argocd-config` repos exist, podinfo image in Docker Hub
-- ✅ ArgoCD running on minikube (`kubectl get pods -n argocd`)
-- ✅ ArgoCD CLI installed and logged in (`argocd login localhost:8080 --username admin --insecure`)
+- ✅ Completed Demo-05 — `podinfo-config` and `argocd-config` repos exist,
+  podinfo image in Docker Hub
+- ✅ Completed Demo-06 — automated sync, pruning and self-healing understood
+- ✅ ArgoCD running on minikube
+- ✅ ArgoCD CLI installed and logged in
 - ✅ `kubectl` available in terminal
-- ✅ GitHub PAT available (same one from Demo-05)
+- ✅ GitHub PAT with access to `podinfo-config`, `argocd-config` and
+  `argocd-platform-config`
 
-> **PAT Scope — include all repos upfront:** The fine-grained PAT must include all
-> repositories it will be used with at creation time. In this demo three repos are
-> needed: `podinfo-config`, `argocd-config`, and `argocd-platform-config`. If your
-> existing PAT from Demo-05 only covers `podinfo-config` and `argocd-config`, either
-> edit it to add `argocd-platform-config` or generate a new PAT selecting all three
-> repos. A PAT missing a repo returns a 403 error on push — not an expiry message.
+**Verify Prerequisites:**
 
-**Verify prerequisites:**
+### 1. ArgoCD pods are running
 ```bash
 kubectl get pods -n argocd
-argocd app list
-argocd repo list        # should show only podinfo-config from Demo-05 — 1 repo expected
 ```
+
+**Expected:** All pods `Running` and `1/1` Ready.
+
+### 2. ArgoCD UI is accessible
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+```
+
+Open `http://localhost:8080` — you should see the ArgoCD login page.
+
+### 3. ArgoCD CLI is installed and logged in
+```bash
+argocd version --client
+argocd login localhost:8080 --username admin --insecure
+```
+
+**Expected:**
+```text
+argocd: v3.x.x
+'admin:login' logged in successfully
+```
+
+### 4. `podinfo-config` is registered and image is available
+```bash
+# podinfo-config must be registered — ArgoCD clones it at sync time
+argocd repo list
+```
+
+**Expected:** `podinfo-config` listed with `Successful` status.
+
+If `podinfo-config` is not listed, re-register it:
+```bash
+argocd repo add https://github.com/rselvantech/podinfo-config.git \
+  --username rselvantech \
+  --password <GITHUB_PAT>
+```
+
+```bash
+# podinfo image must exist in Docker Hub
+docker pull rselvantech/podinfo:v1.0.0
+```
+
+**Expected:** Image pulled successfully or `Already up to date`.
+
+> **PAT scope:** The PAT used in this demo must include access to all three
+> repos — `podinfo-config`, `argocd-config`, and `argocd-platform-config`.
+> `argocd-platform-config` is a new repo created in Step 1 of this demo.
+> If your existing PAT only covers `podinfo-config` and `argocd-config`,
+> generate a new PAT or edit the existing one to add `argocd-platform-config`
+> before starting.
+>
+> Only `podinfo-config` needs to be registered with ArgoCD — because ArgoCD
+> actively clones it at sync time to read your Kubernetes manifests.
+> `argocd-config` and `argocd-platform-config` do not need ArgoCD registration
+> — ArgoCD never clones them. You apply their contents manually with
+> `kubectl apply`. See **Which Repos Need ArgoCD Registration — and Why**
+> in the Concepts section for the full explanation.
 
 ---
 
-## Background: Why the Default Project Is Not Enough
+## Concepts
+
+### Why the Default Project Is Not Enough
 
 Since Demo-01, every Application CRD has had this line:
 
@@ -88,7 +143,7 @@ satisfy all of its constraints — **before sync begins**.
 
 ---
 
-## Background: What an AppProject Controls
+### What an AppProject Controls
 
 ```
 AppProject
@@ -175,7 +230,7 @@ In this demo we use `namespaceResourceWhitelist` — podinfo only needs `Deploym
 
 ---
 
-## Background: Which Repos Need ArgoCD Registration — and Why
+### Which Repos Need ArgoCD Registration — and Why
 
 This is one of the most important concepts to get right before building the repo
 structure for any demo.
@@ -209,7 +264,7 @@ kind: Application
 spec:
   source:
     repoURL: https://github.com/rselvantech/podinfo-config.git  # ← ArgoCD watches THIS
-    path: demo-09/backend                                         # ← for changes HERE
+    path: demo-09-argocd-projects/backend                                         # ← for changes HERE
   syncPolicy:
     automated:                    # ← auto-sync applies to podinfo-config only
       prune: true
@@ -228,22 +283,22 @@ Nothing breaks — but nothing extra happens either. ArgoCD stores the credentia
 never uses them because no Application CRD references those repos as a source.
 Registration without a matching Application source is harmless but pointless.
 
-**This limitation is exactly what App-of-Apps (Demo-XX) solves — for `argocd-config`:**
+**This limitation is exactly what App-of-Apps (Demo-11) solves — for both `argocd-config` and `argocd-platform-config`:**
 
-Right now `argocd-config` is manual — you `kubectl apply` every time you add or
-update an Application CRD. App-of-Apps creates a parent Application that points to
-`argocd-config` as its source, making ArgoCD watch and auto-sync that repo too.
-At that point `argocd-config` genuinely needs to be registered.
+Right now both repos are manual — you `kubectl apply` every time you add or
+update an Application CRD or an AppProject. App-of-Apps creates a parent
+Application that points to `argocd-config` as its source, making ArgoCD watch
+and auto-sync Application CRDs automatically. A dedicated `argocd-projects`
+Application does the same for `argocd-platform-config`, watching the AppProject
+folder and auto-syncing it too. At that point both repos genuinely need to be
+registered with ArgoCD.
 
-`argocd-platform-config` follows the same pattern in full production App-of-Apps
-setups — a dedicated `argocd-projects` Application watches the AppProject folder
-and auto-syncs it too. Both repos end up registered and ArgoCD-managed. The safety
-for governance changes comes from **Git branch protection and PR review**, not from
-keeping the apply step manual. In this demo however, both repos stay manual —
-App-of-Apps is covered in Demo-XX.
+Both repos end up registered and ArgoCD-managed. The safety for governance
+changes comes from **Git branch protection and PR review**, not from keeping
+the apply step manual. In this demo however, both repos stay manual —
+App-of-Apps is covered in Demo-11.
 
 ---
-
 
 
 This demo reuses the existing repos from Demo-05 with one addition:
@@ -282,20 +337,20 @@ local directory location is irrelevant to git, only the remote URL matters.
 
 ```
 09-argocd-projects/src/
-├── podinfo-config/              ← git init here → remote: rselvantech/podinfo-config
-│   └── demo-09/
+├── podinfo-config/                   ← git init here → remote: rselvantech/podinfo-config
+│   └── demo-09-argocd-projects/
 │       ├── frontend/
 │       │   ├── deployment.yaml
 │       │   └── service.yaml
 │       └── backend/
 │           ├── deployment.yaml
 │           └── service.yaml
-├── argocd-config/               ← git init here → remote: rselvantech/argocd-config
-│   └── demo-09/
+├── argocd-config/                    ← git init here → remote: rselvantech/argocd-config
+│   └── demo-09-argocd-projects/
 │       ├── podinfo-frontend-app.yaml
 │       └── podinfo-backend-app.yaml
-└── argocd-platform-config/      ← git init here → remote: rselvantech/argocd-platform-config (new)
-    └── demo-09/
+└── argocd-platform-config/           ← git init here → remote: rselvantech/argocd-platform-config (new)
+    └── demo-09-argocd-projects/
         └── podinfo-project.yaml
 ```
 
@@ -303,20 +358,25 @@ local directory location is irrelevant to git, only the remote URL matters.
 
 ```
 rselvantech/podinfo-config (GitHub)
-├── deployment.yaml        ← from Demo-05 push
-├── service.yaml           ← from Demo-05 push
-└── demo-09/               ← from Demo-09 push (different local dir, same remote)
+├── deployment.yaml              ← Demo-05 root (already there)
+├── service.yaml                 ← Demo-05 root (already there)
+├── demo-06-sync-pruning/        ← Demo-06 added this (already there)
+│   ├── deployment.yaml
+│   └── service.yaml
+└── demo-09-argocd-projects/     ← This demo adds this
     ├── frontend/
     └── backend/
 
 rselvantech/argocd-config (GitHub)
-├── podinfo-app.yaml       ← from Demo-05 push
-└── demo-09/               ← from Demo-09 push
+├── podinfo-app.yaml             ← Demo-05 root (already there)
+├── demo-06-sync-pruning/        ← Demo-06 added this (already there)
+│   └── podinfo-app.yaml
+└── demo-09-argocd-projects/     ← This demo adds this
     ├── podinfo-frontend-app.yaml
     └── podinfo-backend-app.yaml
 
 rselvantech/argocd-platform-config (GitHub)
-└── demo-09/               ← new repo, first push
+└── demo-09-argocd-projects/     ← new repo, first push
     └── podinfo-project.yaml
 ```
 
@@ -428,8 +488,8 @@ dockerhub-secret   kubernetes.io/dockerconfigjson   1      5s
 ## Step 2: Add Manifests to `podinfo-config`
 
 The `podinfo-config` remote repo already exists and is registered with ArgoCD from
-Demo-05. Here we initialise `demo-09/src/podinfo-config` as a fresh local git repo
-pointing to the same remote — pull the existing history, add `demo-09/` files, push:
+Demo-05. Here we initialise `demo-09-argocd-projects/src/podinfo-config` as a fresh local git repo
+pointing to the same remote — pull the existing history, add `demo-09-argocd-projects/` files, push:
 
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
@@ -442,15 +502,15 @@ git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/po
 git pull origin main --allow-unrelated-histories --no-rebase
 ```
 
-Create the manifest files below inside `demo-09/frontend/` and `demo-09/backend/`, then push:
+Create the manifest files below inside `demo-09-argocd-projects/frontend/` and `demo-09-argocd-projects/backend/`, then push:
 
 ```bash
-git add demo-09/
+git add demo-09-argocd-projects/
 git commit -m "feat: add demo-09 frontend and backend manifests"
 git push origin main
 ```
 
-**Backend deployment** (`demo-09/backend/deployment.yaml`):
+**Backend deployment** (`demo-09-argocd-projects/backend/deployment.yaml`):
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -481,7 +541,7 @@ spec:
               value: "podinfo backend"
 ```
 
-**Backend service** (`demo-09/backend/service.yaml`):
+**Backend service** (`demo-09-argocd-projects/backend/service.yaml`):
 ```yaml
 apiVersion: v1
 kind: Service
@@ -496,7 +556,7 @@ spec:
       targetPort: 9898
 ```
 
-**Frontend deployment** (`demo-09/frontend/deployment.yaml`):
+**Frontend deployment** (`demo-09-argocd-projects/frontend/deployment.yaml`):
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -529,7 +589,7 @@ spec:
               value: "http://podinfo-backend:9898"   # calls the backend Service
 ```
 
-**Frontend service** (`demo-09/frontend/service.yaml`):
+**Frontend service** (`demo-09-argocd-projects/frontend/service.yaml`):
 ```yaml
 apiVersion: v1
 kind: Service
@@ -547,30 +607,36 @@ spec:
 Push both directories to `podinfo-config`:
 ```bash
 # Already in: gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
-git add demo-09/frontend/ demo-09/backend/
+git add demo-09-argocd-projects/frontend/ demo-09-argocd-projects/backend/
 git commit -m "feat: add demo-09 frontend and backend manifests"
 git push origin main
 ```
 
-> **Note:** Do not remove the root-level manifests from Demo-05. The new `demo-09/frontend/`
->> and `demo-09/backend/` subdirectories coexist alongside them. Demo-09 Applications point
-> to `path: demo-09/frontend` and `path: demo-09/backend` — they do not read the root.
-> Demo-05 continues to work unchanged:
+> **Note:** Do not remove the root-level manifests from Demo-05 or the
+> `demo-06-sync-pruning/` folder from Demo-06. All existing manifests
+> coexist alongside the new `demo-09-argocd-projects/` subdirectories.
+> Demo-09 Applications point only to
+> `path: demo-09-argocd-projects/frontend` and
+> `path: demo-09-argocd-projects/backend` — they do not read the root
+> or any other demo folder. Demo-05 and Demo-06 continue to work unchanged:
 > ```
 > podinfo-config/
-> ├── deployment.yaml        ← root level — Demo-05 Application still reads this
-> ├── service.yaml           ← root level — Demo-05 Application still reads this
-> ├── demo-09/
-> │   ├── frontend/          ← Demo-09 frontend Application reads this
-> │   └── backend/           ← Demo-09 backend Application reads this
-> └── demo-xx/               ← future demos follow same pattern
+> ├── deployment.yaml              ← root level — Demo-05 Application reads this
+> ├── service.yaml                 ← root level — Demo-05 Application reads this
+> ├── demo-06-sync-pruning/        ← Demo-06 (already present, untouched)
+> │   ├── deployment.yaml
+> │   └── service.yaml
+> ├── demo-09-argocd-projects/     ← Demo-09 adds this
+> │   ├── frontend/
+> │   └── backend/
+> └── demo-10/                     ← future demos follow same pattern
 > ```
 
 ---
 
 ## Step 3: Create the AppProject
 
-Create `demo-09/podinfo-project.yaml`:
+Create `demo-09-argocd-projects/podinfo-project.yaml`:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -647,7 +713,7 @@ other namespace-scoped resource will be blocked.
 The `groups` field maps each role to an SSO group name. In this demo, we simulate
 this with local ArgoCD users (Step 8).
 
-Push to `argocd-platform-config` (new repo — initialise from `demo-09/src/`):
+Push to `argocd-platform-config` (new repo — initialise from `demo-09-argocd-projects/src/`):
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/argocd-platform-config
 
@@ -655,14 +721,14 @@ git init
 git branch -M main
 git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-platform-config.git
 
-git add demo-09/podinfo-project.yaml
+git add demo-09-argocd-projects/podinfo-project.yaml
 git commit -m "feat: add demo-09 podinfo AppProject"
 git push origin main
 ```
 
 Apply the AppProject:
 ```bash
-kubectl apply -f demo-09/podinfo-project.yaml
+kubectl apply -f demo-09-argocd-projects/podinfo-project.yaml
 ```
 
 Expected:
@@ -689,7 +755,7 @@ listed with all source repos, destinations, and whitelisted resources visible.
 
 ## Step 4: Create the ArgoCD Application CRDs
 
-**Backend Application** (`demo-09/podinfo-backend-app.yaml`):
+**Backend Application** (`demo-09-argocd-projects/podinfo-backend-app.yaml`):
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -701,7 +767,7 @@ spec:
   source:
     repoURL: https://github.com/rselvantech/podinfo-config.git
     targetRevision: HEAD
-    path: demo-09/backend
+    path: demo-09-argocd-projects/backend
   destination:
     server: https://kubernetes.default.svc
     namespace: podinfo-project
@@ -711,7 +777,7 @@ spec:
       selfHeal: true
 ```
 
-**Frontend Application** (`demo-09/podinfo-frontend-app.yaml`):
+**Frontend Application** (`demo-09-argocd-projects/podinfo-frontend-app.yaml`):
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -723,7 +789,7 @@ spec:
   source:
     repoURL: https://github.com/rselvantech/podinfo-config.git
     targetRevision: HEAD
-    path: demo-09/frontend
+    path: demo-09-argocd-projects/frontend
   destination:
     server: https://kubernetes.default.svc
     namespace: podinfo-project
@@ -738,8 +804,8 @@ Key difference from all previous demos: `project: podinfo-project` instead of
 governance boundaries.
 
 The `argocd-config` remote repo already exists from Demo-05. Here we initialise
-`demo-09/src/argocd-config` as a fresh local git repo pointing to the same remote —
-pull existing history, add `demo-09/` files, push:
+`demo-09-argocd-projects/src/argocd-config` as a fresh local git repo pointing to the same remote —
+pull existing history, add `demo-09-argocd-projects/` files, push:
 
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/argocd-config
@@ -751,15 +817,15 @@ git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/ar
 # Pull existing Demo-05 history into this fresh local repo
 git pull origin main --allow-unrelated-histories --no-rebase
 
-git add demo-09/podinfo-backend-app.yaml demo-09/podinfo-frontend-app.yaml
+git add demo-09-argocd-projects/podinfo-backend-app.yaml demo-09-argocd-projects/podinfo-frontend-app.yaml
 git commit -m "feat: add demo-09 podinfo frontend and backend Applications under podinfo-project"
 git push origin main
 ```
 
 Apply both:
 ```bash
-kubectl apply -f demo-09/podinfo-backend-app.yaml
-kubectl apply -f demo-09/podinfo-frontend-app.yaml
+kubectl apply -f demo-09-argocd-projects/podinfo-backend-app.yaml
+kubectl apply -f demo-09-argocd-projects/podinfo-frontend-app.yaml
 ```
 
 ---
@@ -837,7 +903,7 @@ intentionally adding a disallowed resource to `podinfo-config`.
 
 Add a PVC to the backend directory in `podinfo-config`:
 
-Create `demo-09/backend/pvc.yaml`:
+Create `demo-09-argocd-projects/backend/pvc.yaml`:
 ```yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -855,7 +921,7 @@ spec:
 Push to `podinfo-config`:
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
-git add demo-09/backend/pvc.yaml
+git add demo-09-argocd-projects/backend/pvc.yaml
 git commit -m "test: add PVC to demo-09 backend (guardrail test)"
 git push origin main
 ```
@@ -884,7 +950,7 @@ to apply any resources, found a violation, and stopped. The Deployment and Servi
 **Clean up — remove the PVC:**
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
-git rm demo-09/backend/pvc.yaml
+git rm demo-09-argocd-projects/backend/pvc.yaml
 git commit -m "revert: remove PVC guardrail test"
 git push origin main
 ```
@@ -1483,11 +1549,11 @@ kubectl create secret docker-registry dockerhub-secret \
   --namespace=podinfo-project
 
 # Apply AppProject
-kubectl apply -f demo-09/podinfo-project.yaml
+kubectl apply -f demo-09-argocd-projects/podinfo-project.yaml
 
 # Apply Applications
-kubectl apply -f demo-09/podinfo-backend-app.yaml
-kubectl apply -f demo-09/podinfo-frontend-app.yaml
+kubectl apply -f demo-09-argocd-projects/podinfo-backend-app.yaml
+kubectl apply -f demo-09-argocd-projects/podinfo-frontend-app.yaml
 
 # Verify AppProject
 kubectl get appproject -n argocd
@@ -1564,7 +1630,10 @@ in ClusterRoleBindings.
 
 ## What's Next
 
-**Demo-XX: App-of-Apps Pattern**
-Manage multiple ArgoCD Applications declaratively using a parent Application that
-deploys child Applications. Eliminate manual `kubectl apply` for each Application CRD
-— let ArgoCD manage them from Git automatically.
+**Demo-10: Sync Phases & Hooks**
+Build on the AppProject governance established in this demo to explore ArgoCD's
+sync lifecycle — PreSync, Sync, PostSync and SyncFail phases. Learn how hooks
+attach controlled, one-time logic to each phase — running database migrations
+before pods start, smoke tests after deployment completes, and failure alerts
+when sync breaks. The Goals App (React + Node.js + MongoDB) provides the
+real-world context where every hook has a natural, motivated use case.
