@@ -310,6 +310,29 @@ argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 
 ---
 
+### Hooks Only Fire for Their Own Application
+
+A Kubernetes Job with hook annotations that exists in the cluster but is **not**
+defined in the application's source repository will NOT be executed during that
+application's sync.
+
+ArgoCD only runs hooks that are part of the application's source manifests —
+not all jobs with hook annotations that happen to exist in the cluster.
+```
+# Job created externally with hook annotations — NOT run during app sync
+kubectl apply -f external-job.yaml    # has PreSync annotation
+
+# Trigger sync of the application
+argocd app sync sync-phase-hook-demo-goals-app
+# → only runs hooks defined in goals-app-config source
+# → external-job.yaml is NOT executed
+```
+
+This is a common source of confusion — hook annotations on externally created
+jobs are ignored by ArgoCD during sync operations for other applications.
+
+---
+
 ### Why We Push Application CRD to Git AND `kubectl apply`
 
 Every Application CRD change in this demo follows the two-step pattern:

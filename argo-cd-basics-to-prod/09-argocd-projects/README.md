@@ -230,6 +230,69 @@ In this demo we use `namespaceResourceWhitelist` — podinfo only needs `Deploym
 
 ---
 
+### AppProject RBAC Roles
+
+AppProject supports defining roles with permissions directly in the project YAML.
+This is ArgoCD-internal RBAC — not Kubernetes RBAC:
+```yaml
+spec:
+  roles:
+    - name: read-only
+      description: Read-only access for developers
+      policies:
+        - p, proj:team-finance:read-only, applications, get, team-finance/*, allow
+        - p, proj:team-finance:read-only, applications, sync, team-finance/*, deny
+      groups:
+        - finance-developers   # maps to SSO group
+```
+
+For most teams starting with ArgoCD, the default project-level permissions are
+sufficient. RBAC roles in AppProject are relevant once you have SSO configured
+via Dex and multiple teams sharing one ArgoCD instance.
+
+---
+
+### Propagation Policies — How ArgoCD Deletes Applications
+
+When you delete an ArgoCD Application, you choose how the owned Kubernetes
+resources are handled. This is a Kubernetes concept that ArgoCD surfaces in
+its delete dialog.
+
+**Foreground** — dependents deleted first, then owner:
+```
+Deployment enters "deletion in progress"
+  → pods deleted first
+  → ReplicaSet deleted
+  → Deployment deleted
+```
+Safe but slower. Nothing is deleted until all children are gone.
+
+**Background** (default) — owner deleted immediately, children cleaned up after:
+```
+Deployment deleted immediately
+  → garbage collector deletes ReplicaSet
+  → garbage collector deletes pods
+```
+Faster. Children are cleaned up asynchronously after the owner is gone.
+
+**Orphan** — owner deleted, children left in cluster:
+```
+Deployment deleted
+  → ReplicaSet stays
+  → Pods stay
+```
+Use when you want to delete the ArgoCD Application but keep the running
+resources. Useful during migrations.
+
+**In ArgoCD UI:** The delete dialog shows these three options as a dropdown.
+In `kubectl delete app`, background is the default — to specify:
+```bash
+kubectl delete app <name> -n argocd --cascade=foreground
+kubectl delete app <name> -n argocd --cascade=orphan
+```
+
+---
+
 ### Which Repos Need ArgoCD Registration — and Why
 
 This is one of the most important concepts to get right before building the repo
