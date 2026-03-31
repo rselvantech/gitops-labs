@@ -187,6 +187,13 @@ metadata:
 - All resources in wave N must be `Healthy` before wave N+1 begins
 - Wave ordering operates within a single Application — not across Applications
 
+> **Watch for unannotated resources defaulting to wave 0:**
+> Any resource without a sync-wave annotation is treated as wave 0.
+> If you annotate your ConfigMap at wave 0 but leave your Service
+> unannotated, both will be in wave 0 and applied together — which may
+> not be what you intended. Always annotate every resource explicitly
+> when using sync waves to avoid unexpected ordering from defaults.
+
 **Wave numbering — leave gaps intentionally:**
 ```
 Wave -1  →  Namespace, ResourceQuota, LimitRange, ServiceAccount, Secret

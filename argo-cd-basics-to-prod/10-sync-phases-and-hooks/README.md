@@ -32,6 +32,7 @@ motivation, not a contrived example.
 - Hook delete policies — why hooks clean themselves up
 - How the Skip hook bypasses a hook without removing it
 - Why Jobs are the most common hook implementation — and what else can be used
+- How Multiple PreSync Hooks can be executed in a order using Sync Waves
 
 **What you'll do:**
 - Deploy the Goals App (React + Node.js + MongoDB) with MongoDB authentication
@@ -217,6 +218,15 @@ metadata:
 | `PostDelete` | After the Application CRD is deleted | Cleanup of external resources |
 | `Skip` | Never — it skips the hook itself | Temporarily bypass a hook without removing it |
 
+
+> **Ordering multiple hooks in the same phase:**
+> If you have two PreSync hooks where one depends on the other completing
+> first, you can use sync wave annotations on the hook Jobs themselves.
+> ArgoCD will then run wave 1 hook first, wait for it to be Healthy, then
+> start wave 2 hook — within the same PreSync phase.
+> Sync waves are covered in Demo-11. The combination of waves and phases
+> is demonstrated in Demo-11 Step 7.
+
 ---
 
 ### Hook Failure — How It Propagates Through the Lifecycle
@@ -308,7 +318,17 @@ argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
   job stays in the cluster so you can inspect its logs and diagnose the failure.
   Never add `HookFailed` to the delete policy if you want to inspect failures.
 
+
+> **When to omit `HookSucceeded`:** If you want to inspect the hook job's
+> logs after a successful run — for debugging or auditing — omit
+> `HookSucceeded` from the delete policy. The job stays in the cluster
+> after success and you can run `kubectl logs` at any time. Clean it up
+> manually with `kubectl delete job <name> -n <namespace>` when done.
+> Only `BeforeHookCreation` ensures a fresh job is created on the next
+> sync without name conflicts.
+
 ---
+
 
 ### Hooks Only Fire for Their Own Application
 
@@ -1280,6 +1300,154 @@ git push origin main
 
 ---
 
+### Step 9: Order Multiple PreSync Hooks with Sync Waves
+
+The Goals App currently has one PreSync hook — the DB initialisation job.
+In a real deployment you might need a second PreSync step that depends on
+the first completing successfully. For example:
+
+- **Wave 1:** DB schema migration — creates the `goals` collection and index
+- **Wave 2:** DB seed data — inserts default data that requires the schema to exist
+
+Without wave ordering, both jobs start simultaneously. The seed job tries to
+insert into a collection that does not exist yet and fails.
+
+
+**`sync-wave` annotation — quick introduction**
+
+`argocd.argoproj.io/sync-wave: "N"` tells ArgoCD to apply this resource in wave N. Lower number runs first. Wave ordering is covered in full in Demo-11 — here we use it only to order two PreSync jobs relative to each other.
+
+
+
+**Add a wave annotation to the existing PreSync hook:**
+
+Edit `demo-10-sync-hooks/hooks/presync-db-init.yaml` — add sync-wave:
+```yaml
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "1"           # ← runs first
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+```
+
+**Create a second PreSync hook at wave 2:**
+
+Create `demo-10-sync-hooks/hooks/presync-seed-data.yaml`:
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: presync-seed-data
+  namespace: goals-app
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "2"           # ← runs after wave 1 completes
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed-data
+          image: mongo:6.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== PreSync wave 2: Seeding default data ==="
+              echo "This only runs after wave 1 (schema migration) completes."
+              mongosh \
+                --host mongodb.goals-app.svc.cluster.local \
+                --username $MONGODB_USERNAME \
+                --password $MONGODB_PASSWORD \
+                --authenticationDatabase admin \
+                course-goals \
+                --eval "
+                  db.goals.insertOne({
+                    text: 'Welcome — your first goal is pre-seeded',
+                    _id: ObjectId('000000000000000000000001')
+                  });
+                  print('Seed data inserted successfully.');
+                "
+              echo "=== PreSync wave 2: Seeding complete ==="
+          env:
+            - name: MONGODB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: MONGODB_USERNAME
+            - name: MONGODB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: MONGODB_PASSWORD
+```
+
+**Push:**
+```bash
+git add demo-10-sync-hooks/hooks/
+git commit -m "feat: add wave ordering to PreSync hooks — schema before seed data"
+git push origin main
+```
+
+**Sync and observe:**
+
+Open a second terminal and watch:
+```bash
+kubectl get jobs -n goals-app -w
+```
+
+Sync:
+```bash
+argocd app sync sync-phase-hook-demo-goals-app
+```
+
+**Expected — PreSync wave 1 completes before wave 2 starts:**
+```text
+NAME                 STATUS     COMPLETIONS   AGE
+presync-db-init      Running    0/1           3s    ← wave 1
+presync-db-init      Running    0/1           8s
+presync-db-init      Complete   1/1           15s   ← wave 1 done
+presync-seed-data    Running    0/1           17s   ← wave 2 starts
+presync-seed-data    Complete   1/1           22s   ← wave 2 done
+# Both deleted by HookSucceeded policy
+# Sync phase begins
+```
+
+**Key observation:** `presync-seed-data` did not appear until `presync-db-init`
+reached `Complete`. Without the wave annotation, both jobs would have started
+at second 3 simultaneously.
+
+**Verify the seeded goal appears in the app:**
+```bash
+kubectl port-forward svc/goals-backend-svc -n goals-app 8080:80
+curl http://localhost:8080/goals
+```
+
+**Expected:**
+```json
+{"goals": [{"text": "Welcome — your first goal is pre-seeded", ...}]}
+```
+
+The seeded goal exists because the seed job ran after the schema was ready —
+guaranteed by wave ordering within the PreSync phase.
+
+> **The combined lifecycle in this demo:**
+> ```
+> PreSync phase:
+>   wave 1 → presync-db-init      (schema migration)
+>   wave 2 → presync-seed-data    (seed data — depends on wave 1)
+>
+> Sync phase:
+>   wave 0 → all manifests applied (Deployments, Services etc.)
+>
+> PostSync phase:
+>   wave 0 → postsync-smoke-test   (verifies API is reachable)
+> ```
+> This is the complete ArgoCD sync lifecycle — phases controlling the
+> macro order, waves controlling the micro order within each phase.
+
+
 ## Verify Final State
 
 ```bash
@@ -1441,6 +1609,12 @@ by whom, and the commit message explains why.
 When sync fails due to a bad manifest, previously applied resources (pods,
 services) continue running. ArgoCD only failed on the new broken manifest.
 The app remains healthy even when the sync is broken.
+
+**Lesson 8 : Multiple hooks in the same phase have no ordering guarantee without waves**
+If you have two PreSync hooks and the second depends on the first completing,
+add `argocd.argoproj.io/sync-wave` to both. Without waves, ArgoCD runs all
+hooks in the same phase simultaneously — the dependent job will fail if the
+dependency has not completed yet.
 
 ---
 
