@@ -240,15 +240,15 @@ spec:
     - name: read-only
       description: Read-only access for developers
       policies:
-        - p, proj:team-finance:read-only, applications, get, team-finance/*, allow
-        - p, proj:team-finance:read-only, applications, sync, team-finance/*, deny
+        - p, role:proj:team-finance:read-only, applications, get, team-finance/*, allow
+        - p, role:proj:team-finance:read-only, applications, sync, team-finance/*, deny
       groups:
         - finance-developers   # maps to SSO group
 ```
 
 For most teams starting with ArgoCD, the default project-level permissions are
-sufficient. RBAC roles in AppProject are relevant once you have SSO configured
-via Dex and multiple teams sharing one ArgoCD instance.
+sufficient. **RBAC roles in AppProject are relevant once you have SSO configured
+via Dex and multiple teams sharing one ArgoCD instance.**
 
 ---
 
@@ -459,8 +459,7 @@ your private Docker Hub. The same image supports a two-tier setup natively:
 - **Frontend** — configured with `PODINFO_BACKEND_URL` env var pointing to the backend
   Service, proxies calls to it and displays the combined response in its UI
 
-This mirrors the transcript's custom Flask frontend + backend exactly — but with zero
-custom code and zero Docker builds. Both tiers use the same public image.
+ Both tiers use the same public image.
 
 ```
 Browser → frontend Service (port 9898)
@@ -520,8 +519,11 @@ podinfo-project   Active   5s
 
 ## Step 1b: Create Docker Registry Secret in `podinfo-project` Namespace
 
-Your podinfo image is private on Docker Hub. The `podinfo-project` namespace needs
-a `docker-registry` secret to pull it — same pattern as Demo-05 but in the new namespace:
+
+This demo uses my own podinfo ( private container image) from Docker Hub.Hence for Kubernetes to pull this private container image from Docker Hub, we need this `docker-registry` secret.
+
+Here, The `podinfo-project` namespace needs
+a `docker-registry` secret to pull it — same pattern as Demo-05  but in the new namespace:
 
 ```bash
 kubectl create secret docker-registry dockerhub-secret \
@@ -548,29 +550,37 @@ dockerhub-secret   kubernetes.io/dockerconfigjson   1      5s
 
 ---
 
-## Step 2: Add Manifests to `podinfo-config`
+## Step 2: Add `podinfo` Manifests to `podinfo-config` Repo
 
 The `podinfo-config` remote repo already exists and is registered with ArgoCD from
 Demo-05. Here we initialise `demo-09-argocd-projects/src/podinfo-config` as a fresh local git repo
 pointing to the same remote — pull the existing history, add `demo-09-argocd-projects/` files, push:
 
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
+cd 09-argocd-projects/src
+
+mkdir podinfo-config && cd podinfo-config
 
 git init
 git branch -M main
 git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/podinfo-config.git
 
-# Pull existing Demo-05 history into this fresh local repo
+# Pull existing history into this fresh local repo
 git pull origin main --allow-unrelated-histories --no-rebase
 ```
 
-Create the manifest files below inside `demo-09-argocd-projects/frontend/` and `demo-09-argocd-projects/backend/`, then push:
+Create the manifest files below inside `demo-09-argocd-projects/frontend/` and `demo-09-argocd-projects/backend/`
 
 ```bash
-git add demo-09-argocd-projects/
-git commit -m "feat: add demo-09 frontend and backend manifests"
-git push origin main
+#Create backend manifest files
+mkdir -p demo-09-argocd-projects/backend
+touch demo-09-argocd-projects/backend/deployment.yaml
+touch demo-09-argocd-projects/backend/service.yaml
+
+#Create frontend manifest files
+mkdir -p demo-09-argocd-projects/frontend
+touch demo-09-argocd-projects/frontend/deployment.yaml
+touch demo-09-argocd-projects/frontend/service.yaml
 ```
 
 **Backend deployment** (`demo-09-argocd-projects/backend/deployment.yaml`):
@@ -670,7 +680,7 @@ spec:
 Push both directories to `podinfo-config`:
 ```bash
 # Already in: gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
-git add demo-09-argocd-projects/frontend/ demo-09-argocd-projects/backend/
+git add demo-09-argocd-projects/
 git commit -m "feat: add demo-09 frontend and backend manifests"
 git push origin main
 ```
@@ -697,7 +707,28 @@ git push origin main
 
 ---
 
-## Step 3: Create the AppProject
+## Step 3: Create AppProject and Add to `argocd-platform-config` Repo
+
+Here we initialise `demo-09-argocd-projects/src/argocd-platform-config` as a fresh local git repo
+pointing to the remote repo `argocd-platform-config` — pull the existing history, add `demo-09-argocd-projects/` files and push:
+
+Initialise repo and create `demo-09-argocd-projects/podinfo-project.yaml`:
+```bash
+cd 09-argocd-projects/src
+
+mkdir argocd-platform-config && cd argocd-platform-config
+
+git init
+git branch -M main
+git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-platform-config.git
+
+# Pull existing history into this fresh local repo
+git pull origin main 
+
+#Create AppProject manifest 
+mkdir -p demo-09-argocd-projects
+touch demo-09-argocd-projects/podinfo-project.yaml
+```
 
 Create `demo-09-argocd-projects/podinfo-project.yaml`:
 
@@ -776,21 +807,14 @@ other namespace-scoped resource will be blocked.
 The `groups` field maps each role to an SSO group name. In this demo, we simulate
 this with local ArgoCD users (Step 8).
 
-Push to `argocd-platform-config` (new repo — initialise from `demo-09-argocd-projects/src/`):
+
+
+Push and Apply the AppProject:
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/argocd-platform-config
-
-git init
-git branch -M main
-git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-platform-config.git
-
-git add demo-09-argocd-projects/podinfo-project.yaml
+git add demo-09-argocd-projects/
 git commit -m "feat: add demo-09 podinfo AppProject"
 git push origin main
-```
 
-Apply the AppProject:
-```bash
 kubectl apply -f demo-09-argocd-projects/podinfo-project.yaml
 ```
 
@@ -816,7 +840,28 @@ listed with all source repos, destinations, and whitelisted resources visible.
 
 ---
 
-## Step 4: Create the ArgoCD Application CRDs
+## Step 4: Create ArgoCD Application CRDs and Add to `argocd-config` Repo
+
+The `argocd-config` remote repo already exists from Demo-05. Here we initialise
+`demo-09-argocd-projects/src/argocd-config` as a fresh local git repo pointing to the same remote —
+pull existing history, add `demo-09-argocd-projects/` files, push:
+
+```bash
+cd 09-argocd-projects/src
+
+mkdir argocd-config && cd argocd-config
+
+git init
+git branch -M main
+git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-config.git
+
+# Pull existing Demo-05 history into this fresh local repo
+git pull origin main --allow-unrelated-histories --no-rebase
+
+mkdir -p demo-09-argocd-projects
+touch demo-09-argocd-projects/podinfo-backend-app.yaml
+touch demo-09-argocd-projects/podinfo-frontend-app.yaml
+```
 
 **Backend Application** (`demo-09-argocd-projects/podinfo-backend-app.yaml`):
 ```yaml
@@ -862,31 +907,20 @@ spec:
       selfHeal: true
 ```
 
-Key difference from all previous demos: `project: podinfo-project` instead of
+- Key difference from all previous demos: `project: podinfo-project` instead of
 `project: default`. This is what brings both Applications under the AppProject's
 governance boundaries.
 
-The `argocd-config` remote repo already exists from Demo-05. Here we initialise
-`demo-09-argocd-projects/src/argocd-config` as a fresh local git repo pointing to the same remote —
-pull existing history, add `demo-09-argocd-projects/` files, push:
+- Also both `Application`'s access the same repo `podinfo-config` but pint to different `path` 
 
+
+**Push and Apply both:**
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/argocd-config
-
-git init
-git branch -M main
-git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-config.git
-
-# Pull existing Demo-05 history into this fresh local repo
-git pull origin main --allow-unrelated-histories --no-rebase
-
-git add demo-09-argocd-projects/podinfo-backend-app.yaml demo-09-argocd-projects/podinfo-frontend-app.yaml
+git add demo-09-argocd-projects/
 git commit -m "feat: add demo-09 podinfo frontend and backend Applications under podinfo-project"
 git push origin main
-```
 
-Apply both:
-```bash
+#Apply the files manualy
 kubectl apply -f demo-09-argocd-projects/podinfo-backend-app.yaml
 kubectl apply -f demo-09-argocd-projects/podinfo-frontend-app.yaml
 ```
@@ -983,7 +1017,9 @@ spec:
 
 Push to `podinfo-config`:
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
+cd 09-argocd-projects/src/podinfo-config
+touch demo-09-argocd-projects/backend/pvc.yaml
+
 git add demo-09-argocd-projects/backend/pvc.yaml
 git commit -m "test: add PVC to demo-09 backend (guardrail test)"
 git push origin main
@@ -1002,8 +1038,19 @@ argocd app get podinfo-backend
 
 Expected:
 ```
-GROUP  KIND                   NAMESPACE         NAME              STATUS     HEALTH   MESSAGE
-       PersistentVolumeClaim  podinfo-project   backend-storage   OutOfSync  Missing  Resource not permitted in project
+Source:
+- Repo:             https://github.com/rselvantech/podinfo-config.git
+  Target:           HEAD
+  Path:             demo-09-argocd-projects/backend
+SyncWindow:         Sync Allowed
+Sync Policy:        Automated (Prune)
+Sync Status:        OutOfSync from HEAD (b4f7e84)
+Health Status:      Missing
+
+GROUP  KIND                   NAMESPACE        NAME             STATUS   HEALTH   HOOK  MESSAGE
+       PersistentVolumeClaim  podinfo-project  backend-storage  Unknown  Missing        resource :PersistentVolumeClaim is not permitted in project podinfo-project
+       Service                podinfo-project  podinfo-backend  Synced   Healthy        
+apps   Deployment             podinfo-project  podinfo-backend  Synced   Healthy     
 ```
 
 **The sync did not proceed.** ArgoCD evaluated the AppProject rules before attempting
@@ -1012,7 +1059,7 @@ to apply any resources, found a violation, and stopped. The Deployment and Servi
 
 **Clean up — remove the PVC:**
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/09-argocd-projects/src/podinfo-config
+cd 09-argocd-projects/src/podinfo-config
 git rm demo-09-argocd-projects/backend/pvc.yaml
 git commit -m "revert: remove PVC guardrail test"
 git push origin main
@@ -1149,51 +1196,50 @@ ArgoCD reads groups → maps to roles via argocd-rbac-cm or AppProject groups fi
 
 ---
 
+
 ### 4. Policy Syntax
 
 Policies are the actual permission rules. ArgoCD uses Casbin as its policy engine.
 Two types of lines exist:
 
-**`p` line — assigns a permission:**
+**`p` line — assigns a permission to a subject:**
 ```
 p, <subject>, <resource>, <action>, <object>, <effect>
 ```
 
-**`g` line — assigns an SSO group to a role:**
+**`g` line — assigns a user or SSO group to a role:**
 ```
-g, <sso-group>, <role>
+g, <user-or-sso-group>, <role>
 ```
-> **Note:** `g` line is for SSO groups only. Do not use with local users —
-> it is unreliable. For local users always use a direct `p` line instead.
 
-**Field breakdown:**
+> **Note:** `g` lines work reliably with SSO groups and SSO users only.
+> For local ArgoCD users, always use a direct `p` line — `g` lines are
+> unreliable for local accounts.
 
-| Field | Description | Examples |
+**Subject — who the policy applies to:**
+
+| Type | Syntax | When to use |
 |---|---|---|
-| subject | Who this applies to | `podinfo-viewer`, `role:readonly`, `proj:podinfo-project:viewer` |
-| resource | What kind of resource | `applications`, `clusters`, `repositories`, `projects`, `logs`, `exec` |
-| action | What operation | `get`, `create`, `update`, `delete`, `sync`, `override`, `action/*`, `*` |
-| object | Which specific resource | `podinfo-project/*`, `*/guestbook`, `*` |
-| effect | Allow or deny | `allow`, `deny` |
+| Local ArgoCD user | `alice` | User created via `argocd account` |
+| SSO user (OIDC/SAML) | `alice@example.com` | User authenticated via SSO |
+| Built-in role | `role:admin`, `role:readonly` | ArgoCD's pre-defined roles |
+| Custom global role | `role:dev-viewer` | Your own named role defined in `policy.csv` |
+| AppProject role | `role:proj:<project>:<role>` | Role scoped to a specific AppProject |
 
-**Examples:**
-```
-# Allow read-only on all apps in podinfo-project
-p, podinfo-viewer, applications, get, podinfo-project/*, allow
+**Object — which specific resource instance the permission applies to:**
 
-# Allow full access on all apps in podinfo-project
-p, podinfo-admin, applications, *, podinfo-project/*, allow
+| Type | Syntax | When to use |
+|---|---|---|
+| All apps in a project | `<project>/*` | Grant access to every app in one project |
+| Specific app in a project | `<project>/<appname>` | Grant access to one specific app |
+| All apps across all projects | `*/*` or `*` | Wildcard — admin-level scope |
+| Specific app any project | `*/<appname>` | Grant access to one app regardless of project |
 
-# Allow sync only on a specific app
-p, podinfo-viewer, applications, sync, podinfo-project/podinfo-frontend, allow
+> **Object format for `applications` resource is always `<project>/<app>`.**
+> For non-application resources (`clusters`, `repositories`, `projects`),
+> the object is just the resource name or `*`.
 
-# Assign SSO group to a role (g line)
-g, okta-group:platform-admins, role:admin
-```
-
----
-
-### 5. Available Actions Per Resource
+**Action- Available Actions Per Resource**
 
 | Resource | Available actions |
 |---|---|
@@ -1204,6 +1250,54 @@ g, okta-group:platform-admins, role:admin
 | `accounts` | `get`, `update` |
 | `logs` | `get` |
 | `exec` | `create` |
+
+**`p` line field breakdown:**
+
+| Field | Description | Examples |
+|---|---|---|
+| subject | Who the permission applies to | `alice`, `role:readonly`, `role:proj:podinfo-project:viewer` |
+| resource | What kind of resource | `applications`, `clusters`, `repositories`, `projects`, `logs`, `exec`, `applicationsets` |
+| action | What operation | `get`, `create`, `update`, `delete`, `sync`, `override`, `action/*`, `*` |
+| object | Which specific resource instance | `podinfo-project/*`, `*/guestbook`, `default/prod-app`, `*` |
+| effect | Allow or deny | `allow`, `deny` |
+
+**`g` line field breakdown:**
+
+| Field | Description | Examples |
+|---|---|---|
+| user-or-sso-group | SSO group or individual SSO user | `my-org:team-alpha`, `argocd-admin`, `alice@example.com` |
+| role | Target role to assign | `role:admin`, `role:readonly`, `proj:podinfo-project:viewer` |
+
+### 5. Example Policies
+```yaml
+
+  # p line — custom role gets sync permission on one project's apps
+  p, role:dev-syncer, applications, sync, podinfo-project/*, allow
+
+  # p line — custom role gets read-only on all apps
+  p, role:dev-syncer, applications, get, */*, allow
+
+
+  # p line — AppProject role gets read access to project apps
+  p, role:proj:podinfo-project:viewer, applications, get, podinfo-project/*, allow
+
+  # g line — SSO group assigned to a custom global role
+  g, my-org:developers, role:dev-syncer
+
+
+  # g line — SSO group assigned to an AppProject role
+  g, my-org:viewers, role:proj:podinfo-project:viewer
+
+  # g line — individual SSO user assigned to built-in admin role
+  g, alice@example.com, role:admin
+
+  # p line — local user (use p, not g, for local users)
+  p, bob, applications, get, */*, allow
+```
+
+---
+
+
 
 ---
 
@@ -1315,11 +1409,11 @@ ArgoCD provides a built-in command to test whether a user has a specific permiss
 without needing to log in as that user:
 
 ```bash
-# Test if podinfo-viewer can get apps in podinfo-project
+# Test if podinfo-viewer can get apps in podinfo-project - should return: no
 argocd admin settings rbac can podinfo-viewer get applications \
   'podinfo-project/podinfo-frontend' --namespace argocd
 
-# Test if a project role has sync permission
+# Test if a project role has sync permission - should return: no
 argocd admin settings rbac can role:proj:podinfo-project:viewer sync applications \
   'podinfo-project/*' --namespace argocd
 ```
@@ -1493,7 +1587,10 @@ podinfo-frontend  podinfo-project  Synced       Healthy
 Verify in the ArgoCD UI:
 - Log out (top right) → log in with `podinfo-viewer` / `viewer@1234`
 - Only `podinfo-frontend` and `podinfo-backend` are visible
-- **Sync** button is absent or disabled — `get` permission does not include `sync`
+- Try to **Sync** :  It Fails , beacuse `get` permission does not include `sync`
+   ```
+   Unable to sync: permission denied: applications, sync, podinfo-project/podinfo-backend, sub: podinfo-viewer, iat: 2026-04-02T20:58:36Z
+   ```
 - Applications from all other demos are not visible
 
 Optionally verify the policy is working as expected using the ArgoCD RBAC check command:
@@ -1611,12 +1708,6 @@ kubectl create secret docker-registry dockerhub-secret \
   --docker-password='<dockerhub-access-token>' \
   --namespace=podinfo-project
 
-# Apply AppProject
-kubectl apply -f demo-09-argocd-projects/podinfo-project.yaml
-
-# Apply Applications
-kubectl apply -f demo-09-argocd-projects/podinfo-backend-app.yaml
-kubectl apply -f demo-09-argocd-projects/podinfo-frontend-app.yaml
 
 # Verify AppProject
 kubectl get appproject -n argocd

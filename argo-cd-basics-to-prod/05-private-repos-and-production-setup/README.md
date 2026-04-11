@@ -34,8 +34,9 @@ By the end of this demo you will have a clear end-to-end understanding of how Ar
 - Enable Self-Healing and observe ArgoCD revert a manual `kubectl edit`
 
 **Building on Demo-04 — What Changes Here:**
-Demo-04 showed how ArgoCD authenticates to a private Git repo using repository credential secrets (argocd.argoproj.io/secret-type: repository). This demo introduces a second completely different secret type — the Docker registry secret (imagePullSecrets) which lets Kubernetes pull your private container image from Docker Hub. These solve different problems, have different schemas, and are created with different kubectl commands. See the Background section in Demo-04 for the full side-by-side comparison.
-This demo also establishes the three-repo GitOps structure — separating application manifests, ArgoCD Application CRDs, and platform config — that all subsequent demos build on.
+- Demo-04 showed how ArgoCD authenticates to a private Git repo using repository credential secrets (argocd.argoproj.io/secret-type: repository). 
+- This demo introduces a second completely different secret type — the Docker registry secret (imagePullSecrets) which lets Kubernetes pull your private container image from Docker Hub. These solve different problems, have different schemas, and are created with different kubectl commands. See the [Concepts section](#two-different-secret-types--both-used-in-this-demo) for more details.
+- This demo also establishes the three-repo GitOps structure — separating application manifests, ArgoCD Application CRDs, and platform config — that all subsequent demos build on.
 
 ## Prerequisites
 
@@ -189,7 +190,7 @@ If ArgoCD manages 10 applications across 10 repositories, you create 10 deploy k
 - These must be separate credentials. Do not give ArgoCD write access because it is convenient.
 
 ---
-### Background: Two Different Secret Types — Both Used in This Demo
+### Two Different Secret Types — Both Used in This Demo
 
 When working with GitOps on Kubernetes with a private repository and a private
 container registry (as in this demo), two completely different kinds of secrets
