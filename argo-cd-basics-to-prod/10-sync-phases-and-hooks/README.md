@@ -253,7 +253,7 @@ metadata:
 > If you have two PreSync hooks where one depends on the other completing
 > first, use sync wave annotations on the hook Jobs themselves. ArgoCD runs
 > wave 1 hook first, waits for completion, then starts wave 2 hook — within
-> the same PreSync phase. This is demonstrated in Step 9 of this demo.
+> the same PreSync phase. This is demonstrated in Step 8 of this demo.
 
 ---
 
@@ -397,19 +397,18 @@ jobs are ignored by ArgoCD during sync operations for other applications.
 │       ├── backend-service.yaml         ← from README-goals-app-setup.md
 │       ├── frontend-deployment.yaml     ← from README-goals-app-setup.md
 │       ├── frontend-service.yaml        ← from README-goals-app-setup.md
-│       └── hooks/                       ← this demo adds these
-│           ├── presync-db-init.yaml
-│           ├── presync-seed-data.yaml   ← added in Step 9
-│           ├── postsync-smoke-test.yaml
-│           └── syncfail-notify.yaml
+│       ├── presync-db-init.yaml         ← added in this demo
+│       ├── presync-seed-data.yaml       ← added in Step 8 of this demo
+│       ├── postsync-smoke-test.yaml     ← added in this demo
+│       └── syncfail-notify.yaml         ← added in this demo
 └── argocd-config/           ← git init → remote: rselvantech/argocd-config
     └── demo-10-sync-hooks/
         └── goals-app-demo.yaml
 ```
 
 > The base manifests in `demo-10-sync-hooks-goals-app/` already
-> exist from `README-goals-app-setup.md`. This demo only adds the `hooks/`
-> subdirectory.
+> exist from `README-goals-app-setup.md`. This demo only adds the fe files mentioned above
+
 
 > Only `gitops-apps-config` needs to be registered with ArgoCD — already done
 > in `README-goals-app-setup.md`. `argocd-config` is applied manually with
@@ -651,12 +650,12 @@ echo "=== PreSync: DB initialisation complete ==="
 **Create the presync hook job:**
 ```bash
 cd 10-sync-phases-and-hooks/src/gitops-apps-config
-mkdir -p demo-10-sync-hooks-goals-app/hooks
+mkdir -p demo-10-sync-hooks-goals-app
 
-touch demo-10-sync-hooks-goals-app/hooks/presync-db-init.yaml
+touch demo-10-sync-hooks-goals-app/presync-db-init.yaml
 ```
 
-**Create `demo-10-sync-hooks-goals-app/hooks/presync-db-init.yaml`:**
+**Create `demo-10-sync-hooks-goals-app/presync-db-init.yaml`:**
 
 ```yaml
 apiVersion: batch/v1
@@ -736,7 +735,7 @@ spec:
 
 **Push:**
 ```bash
-git add demo-10-sync-hooks-goals-app/hooks/presync-db-init.yaml
+git add demo-10-sync-hooks-goals-app/presync-db-init.yaml
 git commit -m "feat: add PreSync DB initialisation hook"
 git push origin main
 ```
@@ -859,11 +858,10 @@ before marking the deployment done.
 ```bash
 cd 10-sync-phases-and-hooks/src/gitops-apps-config
 
-#touch demo-10-sync-hooks-goals-app/hooks/postsync-smoke-test.yaml
 touch demo-10-sync-hooks-goals-app/postsync-smoke-test.yaml
 ```
 
-**Create `demo-10-sync-hooks-goals-app/hooks/postsync-smoke-test.yaml`:**
+**Create `demo-10-sync-hooks-goals-app/postsync-smoke-test.yaml`:**
 ```yaml
 apiVersion: batch/v1
 kind: Job
@@ -1017,7 +1015,7 @@ touch demo-10-sync-hooks-goals-app/syncfail-notify.yaml
 ```
 
 
-**Create `demo-10-sync-hooks-goals-app/hooks/syncfail-notify.yaml`:**
+**Create `demo-10-sync-hooks-goals-app/syncfail-notify.yaml`:**
 
 ```yaml
 apiVersion: batch/v1
@@ -1436,7 +1434,7 @@ insert into a collection that does not exist yet and fails.
 
 **Add a wave annotation to the existing PreSync hook:**
 
-Edit `demo-10-sync-hooks-goals-app/hooks/presync-db-init.yaml` — add wave 1:
+Edit `demo-10-sync-hooks-goals-app/presync-db-init.yaml` — add wave 1:
 ```yaml
 metadata:
   annotations:
@@ -1814,4 +1812,4 @@ hooks that differ from the application's own configuration.
 Sync waves control the order of regular resource creation — not just hooks.
 Governance resources (ResourceQuota, NetworkPolicy) must exist before Deployment
 pods start. Waves enforce this ordering across any Kubernetes resource, using the
-same annotation pattern introduced in Step 9 of this demo.
+same annotation pattern introduced in Step 8 of this demo.

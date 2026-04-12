@@ -52,6 +52,7 @@ workload pod starts.
 - ✅ ArgoCD CLI installed and logged in
 - ✅ `kubectl` available in terminal
 - ✅ GitHub PAT with access to `gitops-apps-config` and `argocd-config`
+- ✅ `gitops-apps-config` already registered with ArgoCD from Demo-10
 
 **Verify Prerequisites:**
 
@@ -79,6 +80,18 @@ argocd login localhost:8080 --username admin --insecure
 ```text
 argocd: v3.x.x
 'admin:login' logged in successfully
+```
+
+### 4. No leftover namespace from a previous run
+```bash
+kubectl get namespace sync-waves-demo 2>&1
+```
+
+**Expected:** `Error from server (NotFound)` — namespace does not exist.
+
+If it exists from a previous run:
+```bash
+kubectl delete namespace sync-waves-demo
 ```
 
 ---
@@ -1254,10 +1267,9 @@ kubectl delete app sync-waves-demo-app -n argocd
 
 # Delete the namespace (removes all resources)
 kubectl delete namespace sync-waves-demo
+```
 
-
-> **Do NOT deregister `gitops-apps-config`** — it is used in Demo-12, Demo-13,
-> Demo-14, and all future demos. Leave it registered with ArgoCD.
+> **Do NOT deregister `gitops-apps-config`** — it is used future demos Leave it registered with ArgoCD.
 
 
 **Verify:**
@@ -1325,12 +1337,26 @@ the Sync phase, waves determine order.
 ## Commands Reference
 
 ```bash
+
+# Manual sync
+argocd app sync sync-waves-demo-app
+
 # Refresh without applying
 argocd app get sync-waves-demo-app --refresh
 
-
 # Check app status
 argocd app get sync-waves-demo-app
+
+# Prove wave ordering via creation timestamps
+kubectl get namespace,resourcequota,configmap,networkpolicy,service,deployment \
+  -n sync-waves-demo \
+  -o custom-columns=\
+"KIND:.kind,NAME:.metadata.name,CREATED:.metadata.creationTimestamp,WAVE:.metadata.annotations.argocd\.argoproj\.io/sync-wave" \
+  2>/dev/null | sort -k4
+
+# View resources with wave annotations
+kubectl get all -n sync-waves-demo \
+  -o custom-columns=NAME:.metadata.name,WAVE:.metadata.annotations."argocd\.argoproj\.io/sync-wave"
 
 # Access the nginx application
 kubectl port-forward svc/nginx-service -n sync-waves-demo 8081:80
@@ -1339,12 +1365,6 @@ kubectl port-forward svc/nginx-service -n sync-waves-demo 8081:80
 kubectl exec -n sync-waves-demo \
   $(kubectl get pod -n sync-waves-demo -o name) \
   -- env | grep DEMO_API_KEY
-
-# Check ResourceQuota usage
-kubectl describe resourcequota sync-waves-quota -n sync-waves-demo
-
-# Check NetworkPolicy
-kubectl describe networkpolicy nginx-network-policy -n sync-waves-demo
 ```
 
 ---
@@ -1377,6 +1397,4 @@ the sync to hang waiting for a Healthy status that cannot be reached.
 **Demo-12: App-of-Apps Pattern**
 Manage multiple ArgoCD Applications declaratively using a parent Application
 that watches `argocd-config` and auto-syncs child Applications from Git.
-Eliminate the manual `kubectl apply` for every Application CRD. Sync waves
-from this demo carry forward — App-of-Apps uses wave annotations on child
-Application CRDs to control the order in which applications are deployed.
+Eliminate the manual `kubectl apply` for every Application CRD.
