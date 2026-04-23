@@ -316,111 +316,6 @@ exceptionally well together (covered in proj-02) but neither requires the other.
 
 ---
 
-### The Four Rollout Strategies
-
-**1. Rolling Update (default, same as Deployment)**
-
-Argo Rollouts supports the same rolling update behaviour as a standard
-Deployment — same `maxSurge`, same `maxUnavailable`, same gradual pod
-replacement. Functionally, the release process does not change at all.
-
-**Why use a Rollout with rolling update instead of a plain Deployment?**
-
-The answer is the surrounding tooling you get for free by switching to
-the Rollout CRD:
-
-- **CLI dashboard** — `kubectl argo rollouts get rollout <n> --watch`
-  gives a live tree view of ReplicaSets, pods, and status that plain
-  `kubectl rollout status` does not provide
-- **Web UI** — visual rollout progress, pod status per revision, action
-  buttons accessible to non-kubectl users
-- **Analysis hooks** — you can add automated metric checks to a rolling
-  update without changing the rollout strategy, giving you automated
-  rollback even on a basic rolling deployment
-- **Migration on-ramp** — the Rollout CRD accepts the same pod spec as
-  a Deployment. Converting is two field changes. You get all the tooling
-  immediately and can add canary or blue-green strategy later without
-  touching the pod spec
-
-```
-Use when: migrating existing Deployments to Rollouts incrementally.
-          Convert first, gain visibility and analysis capability,
-          then layer in canary or blue-green strategy when ready.
-          Teams that want analysis-driven rollback without changing
-          their release process also use this pattern.
-```
-
-**2. Canary**
-
-The new version receives a small percentage of traffic first. The rollout
-proceeds through a defined sequence of steps — each step either sets a
-traffic weight, pauses for a duration, pauses for manual approval, or
-runs an analysis. If any analysis fails, the rollout aborts and traffic
-returns to the stable version.
-
-```
-Example canary steps:
-  - setWeight: 10    → 10% of traffic to new version
-  - pause: {duration: 5m}   → wait 5 minutes, observe metrics
-  - analysis: templates: [{templateName: success-rate}]
-  - setWeight: 50    → 50% of traffic
-  - pause: {}        → indefinite pause — wait for human approval
-  - setWeight: 100   → full promotion
-
-Use when: you want gradual traffic shifting with metric-based gates.
-          Most production canary deployments use this strategy.
-```
-
-**3. Blue-Green**
-
-Two complete environments run simultaneously. The stable version (`active`)
-receives all production traffic. The new version (`preview`) receives no
-production traffic but is fully deployed and can be tested. When ready,
-a single promotion switches all traffic from active to preview instantly.
-
-```
-                     ┌─────────────────────┐
-Production traffic → │  Active Service      │ → stable pods (blue)
-                     └─────────────────────┘
-No production traffic │  Preview Service     │ → new pods (green)
-(testing only)        └─────────────────────┘
-
-On promotion:
-  Active Service selector → switches to green pods (instant cutover)
-  Green is now production. Blue is kept for fast rollback.
-
-Use when: you need zero downtime instant cutover, or want to run
-          full integration tests on the new version before any
-          production traffic touches it.
-```
-
-**4. Experiment**
-
-An Experiment runs multiple versions of an application simultaneously
-for a defined period and compares their behaviour against each other.
-Unlike canary (which gradually shifts traffic from old to new) and
-blue-green (which switches all traffic at once), an Experiment keeps
-multiple versions alive side by side for the duration of the test,
-then tears them all down. It is designed for A/B testing and hypothesis
-validation — "does version B perform better than version A for users in
-a specific region?" — rather than for a standard production release.
-
-The Experiment CRD is an advanced pattern that requires metric
-infrastructure and careful design to be useful. It is not covered in
-this series because canary with analysis (Demo-09, Demo-10) covers the
-vast majority of production progressive delivery needs. Experiments are
-worth knowing about when your team moves beyond "is the new version
-healthy?" to "is the new version measurably better than the current one?"
-
-```
-Use when: you want to validate a hypothesis about two versions under
-          real production traffic before committing to either one.
-          Requires: metric provider, defined success criteria, and a
-          clear question the experiment is designed to answer.
-```
-
----
-
 ### Argo Rollouts in the Argo Ecosystem
 
 The Argo project consists of four tools that each solve a distinct problem
@@ -494,6 +389,65 @@ For demos 01–11, Argo Rollouts runs standalone — no Argo CD required.
 
 ---
 
+
+### Argo Rollouts Architecture — One Controller, One Job
+
+Argo Rollouts has a deliberately simple architecture: a single controller
+pod that does everything. This is fundamentally different from Argo CD,
+which is composed of three core components with separate responsibilities.
+
+Understanding this difference matters because it explains why Argo Rollouts
+is easier to install, has no internal communication to debug, but also has
+a hard limit on multi-cluster capability (covered in the next section).
+
+```
+Argo CD — three core components, each with one job:
+  ┌──────────────┐   ┌───────────────────┐   ┌────────────────────┐
+  │  API Server  │   │ Repository Server │   │ App Controller     │
+  │              │   │                   │   │                    │
+  │ Entry point  │   │ Fetches desired   │   │ Compares desired   │
+  │ for UI, CLI  │   │ state from Git    │   │ vs live state      │
+  │ and REST API │   │ Renders manifests │   │ Reconciles drift   │
+  └──────────────┘   └───────────────────┘   └────────────────────┘
+  Plus three supporting components: Redis, ApplicationSet Controller,
+  Dex Server
+
+Argo Rollouts — one component:
+  ┌──────────────────────────────────────────────────────┐
+  │  argo-rollouts controller pod                        │
+  │                                                      │
+  │  Watches Rollout resources cluster-wide              │
+  │  Manages ReplicaSets (stable + canary/preview)       │
+  │  Runs AnalysisRuns (queries metrics, executes Jobs)  │
+  │  Updates Service selectors and ingress weights       │
+  │  Promotes or aborts based on analysis results        │
+  └──────────────────────────────────────────────────────┘
+  No Git. No caching layer. No SSO server. No separate API server.
+```
+
+**What this means in practice:**
+
+- **Install**: one `helm install` or one `kubectl apply` — nothing else
+- **Debugging**: one pod's logs contain everything — no need to check
+  which of three components handled a request
+- **Dependencies**: none — no Redis, no Dex, no external Git credentials
+  at the controller level
+- **Scope**: operates entirely within the cluster it is installed in —
+  it cannot reach out to external clusters (see next section)
+
+**What the controller does NOT do** (sourced from official docs at
+`argoproj.github.io/argo-rollouts/architecture`):
+
+> "Note that Argo Rollouts will not tamper with or respond to any changes
+> that happen on normal Deployment Resources."
+
+The controller only watches resources of type `Rollout`. Standard
+Deployments in the same cluster are completely unaffected. This means
+you can install Argo Rollouts in a cluster that already uses standard
+Deployments — the two coexist without interference.
+
+---
+
 ### The Rollout Custom Resource — First Look
 
 The Rollout CRD is intentionally designed to be as close to a standard
@@ -557,61 +511,399 @@ first mistake — it is covered and demonstrated in Demo-03.
 
 ---
 
-### Argo Rollouts Architecture — One Controller, One Job
+### Kubernetes Deployment vs Argo Rollouts — Structure Comparison
 
-Argo Rollouts has a deliberately simple architecture: a single controller
-pod that does everything. This is fundamentally different from Argo CD,
-which is composed of three core components with separate responsibilities.
+**1. API Group and Kind:**
 
-Understanding this difference matters because it explains why Argo Rollouts
-is easier to install, has no internal communication to debug, but also has
-a hard limit on multi-cluster capability (covered in the next section).
+| | Deployment | Rollout |
+|---|---|---|
+| `apiVersion` | `apps/v1` | `argoproj.io/v1alpha1` |
+| `kind` | `Deployment` | `Rollout` |
 
-```
-Argo CD — three core components, each with one job:
-  ┌──────────────┐   ┌───────────────────┐   ┌────────────────────┐
-  │  API Server  │   │ Repository Server │   │ App Controller     │
-  │              │   │                   │   │                    │
-  │ Entry point  │   │ Fetches desired   │   │ Compares desired   │
-  │ for UI, CLI  │   │ state from Git    │   │ vs live state      │
-  │ and REST API │   │ Renders manifests │   │ Reconciles drift   │
-  └──────────────┘   └───────────────────┘   └────────────────────┘
-  Plus three supporting components: Redis, ApplicationSet Controller,
-  Dex Server
+Everything else in the manifest — `metadata`, `spec.replicas`, `spec.selector`,
+`spec.template` — is **identical** between the two objects. Only `apiVersion`,
+`kind`, and `spec.strategy` differ.
 
-Argo Rollouts — one component:
-  ┌──────────────────────────────────────────────────────┐
-  │  argo-rollouts controller pod                        │
-  │                                                      │
-  │  Watches Rollout resources cluster-wide              │
-  │  Manages ReplicaSets (stable + canary/preview)       │
-  │  Runs AnalysisRuns (queries metrics, executes Jobs)  │
-  │  Updates Service selectors and ingress weights       │
-  │  Promotes or aborts based on analysis results        │
-  └──────────────────────────────────────────────────────┘
-  No Git. No caching layer. No SSO server. No separate API server.
+
+**2. Default Strategy When `strategy:` Is Omitted:**
+
+```yaml
+# Deployment — strategy: omitted → Kubernetes silently applies this default:
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge:       25%
+    maxUnavailable: 25%
 ```
 
-**What this means in practice:**
+```yaml
+# Rollout — strategy: omitted → hard validation error:
+error: spec.strategy: Required value
 
-- **Install**: one `helm install` or one `kubectl apply` — nothing else
-- **Debugging**: one pod's logs contain everything — no need to check
-  which of three components handled a request
-- **Dependencies**: none — no Redis, no Dex, no external Git credentials
-  at the controller level
-- **Scope**: operates entirely within the cluster it is installed in —
-  it cannot reach out to external clusters (see next section)
+# Must always be one of:
+#   canary:    or   blueGreen:
+```
 
-**What the controller does NOT do** (sourced from official docs at
-`argoproj.github.io/argo-rollouts/architecture`):
+> **Rule:** Never omit `strategy:` on a Rollout. There is no default — the
+> controller rejects the manifest immediately with a validation error, exactly
+> as observed when testing.
 
-> "Note that Argo Rollouts will not tamper with or respond to any changes
-> that happen on normal Deployment Resources."
 
-The controller only watches resources of type `Rollout`. Standard
-Deployments in the same cluster are completely unaffected. This means
-you can install Argo Rollouts in a cluster that already uses standard
-Deployments — the two coexist without interference.
+**3. Strategy Types Supported:**
+
+| | Deployment | Rollout |
+|---|---|---|
+| Named types | `RollingUpdate`, `Recreate` | `canary`, `blueGreen` only |
+
+**Deployment:**
+
+```yaml
+# Type 1 — default
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge:       1
+    maxUnavailable: 0
+
+# Type 2
+strategy:
+  type: Recreate    # kills all old pods first, then creates new ones
+```
+
+**Rollout:**
+
+```yaml
+# Type 1
+strategy:
+  canary:
+    steps:
+      - setWeight: 20
+      - pause:     {}
+
+# Type 2
+strategy:
+  blueGreen:
+    activeService:  svc-active
+    previewService: svc-preview
+```
+
+> **RollingUpdate behaviour in Rollout:** Use `canary:` with no `steps:` — the
+> controller uses `maxSurge` and `maxUnavailable` to roll out identically to a
+> Deployment RollingUpdate. It is still the `canary:` type, not a separate
+> field.
+>
+> **Recreate has no equivalent in Rollout.** There is no way to express "kill
+> all pods before creating new ones" in the Rollout spec. If your workload
+> requires Recreate semantics, keep it as a Deployment.
+
+
+**4. Position of `strategy:` Inside `spec:` — Side by Side:**
+
+The most common copy-paste mistake when converting. Read both columns line by
+line — the blank lines in the Rollout column show exactly where the Deployment
+puts its `strategy:` block and the Rollout has nothing.
+
+```
+Deployment                              Rollout
+──────────────────────────────────────  ──────────────────────────────────────
+apiVersion: apps/v1                     apiVersion: argoproj.io/v1alpha1
+kind: Deployment                        kind: Rollout
+metadata:                               metadata:
+  name: podinfo                           name: podinfo
+spec:                                   spec:
+  replicas: 5                             replicas: 5
+  selector:                               selector:
+    matchLabels:                            matchLabels:
+      app: podinfo                            app: podinfo
+  strategy:          ← HERE                                    ← nothing here
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge:       1
+      maxUnavailable: 0
+  template:                               template:            ← template first
+    metadata:                               metadata:
+      labels:                                 labels:
+        app: podinfo                            app: podinfo
+    spec:                                   spec:
+      containers:                               containers:
+        - name:  podinfo                            - name:  podinfo
+          image: rselvantech/podinfo:red              image: rselvantech/podinfo:red
+                           ← nothing here     strategy:          ← HERE
+                                                canary:
+                                                  steps:
+                                                    - setWeight: 20
+                                                    - pause:     {}
+```
+
+> **YAML field order does not affect parsing** — Kubernetes accepts fields in
+> any order. The canonical ordering above matters for readability, diffs, and
+> code review. Aligning your manifests to this structure makes the intent
+> immediately clear.
+
+
+**5. What Happens With a Naive Kind Swap:**
+
+Changing only `apiVersion` and `kind` — leaving `strategy:` unchanged — **always fails**. A correct conversion requires three changes, not two:
+
+1. Change `apiVersion` to `argoproj.io/v1alpha1`
+2. Change `kind` to `Rollout`
+3. **Rewrite `strategy:` entirely** — the `type:` field and `rollingUpdate:` block do not exist in the Rollout spec
+
+> **Recreate has no equivalent in Rollout.** If your Deployment uses
+> `type: Recreate`, keep it as a Deployment.
+
+**Converting a RollingUpdate Deployment to a Rollout:**
+
+```yaml
+# Before — Deployment
+spec:
+  strategy:              # ← before template
+    type: RollingUpdate  # ← invalid in Rollout
+    rollingUpdate:       # ← invalid in Rollout
+      maxSurge:       1
+      maxUnavailable: 0
+  template:
+    ...
+
+# After — Rollout
+spec:
+  template:              # ← template comes first
+    ...
+  strategy:              # ← moved after template, rewritten from scratch
+    canary:
+      maxSurge:       1
+      maxUnavailable: 0
+      # steps: omitted → rolling update behaviour
+      # gain: CLI dashboard, web UI, analysis hooks
+```
+
+**6. The Four Rollout Behaviours Mapped to Spec Types:**
+
+The Rollout spec only accepts `canary:` or `blueGreen:` under `strategy:`.
+All four deployment behaviours map to these two types as follows.
+
+| Behaviour | Deployment type | Rollout type | Notes |
+|---|---|---|---|
+| Rolling update | `RollingUpdate` (default) | `canary:` with no steps | Identical behaviour — Rollout adds CLI/UI/analysis tooling |
+| Recreate | `Recreate` | — | No equivalent in Rollout |
+| Canary | — | `canary:` with steps | Not available in Deployment |
+| Blue-green | — | `blueGreen:` | Not available in Deployment |
+| Experiment | — | `experiment:` step inside `canary:` | Not a strategy type — see below |
+
+
+
+**7. Summary Table:**
+
+| Topic | Deployment | Rollout |
+|---|---|---|
+| `strategy:` required | No — defaults to `RollingUpdate` | **Yes — validation error if omitted** |
+| Named strategy types | `RollingUpdate`, `Recreate` | `canary`, `blueGreen` only |
+| Rolling update | Native type | `canary:` with no steps |
+| Recreate | Native type | **No equivalent** |
+| Canary | Not supported | `canary:` with steps |
+| Blue-green | Not supported | `blueGreen:` |
+| Experiment | Not supported | Step in `canary:` or standalone CRD |
+| `strategy:` position | Before `template:` in `spec:` | After `template:` in `spec:` |
+| Naive kind swap works | — | **No — strategy must be rewritten** |
+| Traffic weight control | No | Yes — `setWeight` steps |
+| Manual promotion gate | No | Yes — `pause: {}` |
+| Metric-driven auto rollback | No | Yes — AnalysisRun |
+| CLI + web UI dashboard | No | Yes — kubectl plugin + web UI |
+
+---
+
+### The Four Rollout Strategies
+
+**Important note on strategy types in the spec**
+
+The Rollout spec only accepts two values under `strategy:` — `canary:` and
+`blueGreen:`. Rolling Update and Experiment are not separate strategy types
+you write in the spec — they are behaviours you get from `canary:` in
+specific configurations, explained below.
+
+---
+
+**1. Canary — `strategy: canary:` with steps**
+
+The new version receives a small percentage of traffic first. The rollout
+proceeds through a defined sequence of steps — each step either sets a
+traffic weight, pauses for a duration, pauses for manual approval, or
+runs an analysis. If any analysis fails, the rollout aborts and traffic
+returns to the stable version.
+
+```yaml
+strategy:
+  canary:
+    steps:
+      - setWeight: 10          # 10% of traffic to new version
+      - pause: {duration: 5m}  # wait 5 minutes, observe metrics
+      - setWeight: 50          # 50% of traffic
+      - pause: {}              # indefinite pause — wait for human approval
+      - setWeight: 100         # full promotion
+```
+
+```
+Use when: you want gradual traffic shifting with metric-based gates.
+          Most production canary deployments use this strategy.
+```
+
+---
+
+**2. Canary (no steps) — Rolling Update behaviour**
+
+If a user uses the canary strategy with no steps, the rollout will use the max surge and max unavailable values to roll to the new version. This is the rolling update pattern — the same behaviour as a Kubernetes Deployment — but expressed through the `canary:` strategy with no `steps:` field.
+
+```yaml
+strategy:
+  canary: {}         # no steps — rolls out like a Deployment RollingUpdate
+                     # uses maxSurge and maxUnavailable
+```
+
+Or with explicit surge/unavailable values:
+
+```yaml
+strategy:
+  canary:
+    maxSurge: 1
+    maxUnavailable: 0
+    # steps: omitted → rolling update behaviour
+```
+
+> **Why use a Rollout with rolling update instead of a plain Deployment?**
+> The answer is the surrounding tooling you get for free by switching to
+> the Rollout CRD:
+>
+> - **CLI dashboard** — `kubectl argo rollouts get rollout <n> --watch`
+>   gives a live tree view of ReplicaSets, pods, and status that plain
+>   `kubectl rollout status` does not provide
+> - **Web UI** — visual rollout progress, pod status per revision, action
+>   buttons accessible to non-kubectl users
+> - **Analysis hooks** — you can add automated metric checks to a rolling
+>   update without changing the rollout strategy, giving you automated
+>   rollback even on a basic rolling deployment
+> - **Migration on-ramp** — the Rollout CRD accepts the same pod spec as
+>   a Deployment. Converting is two field changes plus a strategy rewrite.
+>   You get all the tooling immediately and can add canary or blue-green
+>   strategy later without touching the pod spec
+
+```
+Use when: migrating existing Deployments to Rollouts incrementally.
+          Convert first, gain visibility and analysis capability,
+          then layer in canary or blue-green strategy when ready.
+```
+
+> **Note on `Recreate`:** The Kubernetes Deployment `Recreate` strategy
+> has no equivalent in Rollout. There is no way to express "kill all pods
+> before creating new ones" in a Rollout spec. If your workload requires
+> Recreate semantics, keep it as a Deployment.
+
+---
+
+**3. Blue-Green — `strategy: blueGreen:`**
+
+Two complete environments run simultaneously. The stable version (`active`)
+receives all production traffic. The new version (`preview`) receives no
+production traffic but is fully deployed and can be tested. When ready,
+a single promotion switches all traffic from active to preview instantly.
+
+```yaml
+strategy:
+  blueGreen:
+    activeService: podinfo-active      # production traffic — stable version
+    previewService: podinfo-preview    # preview traffic — new version (no prod traffic)
+    autoPromotionEnabled: false        # false = requires manual promote
+    scaleDownDelaySeconds: 30          # how long to keep old RS after promotion
+```
+
+```
+                     ┌─────────────────────┐
+Production traffic → │  Active Service      │ → stable pods (blue)
+                     └─────────────────────┘
+No production traffic │  Preview Service     │ → new pods (green)
+(testing only)        └─────────────────────┘
+
+On promotion:
+  Active Service selector → switches to green pods (instant cutover)
+  Green is now production. Blue is kept for fast rollback.
+
+Use when: you need zero downtime instant cutover, or want to run
+          full integration tests on the new version before any
+          production traffic touches it.
+```
+
+---
+
+**4. Experiment — a step inside `canary:`, not a strategy type**
+
+Experiment is **not** a `strategy:` value you write in the Rollout spec.
+Argo Rollouts only supports Blue-Green and Canary as named strategy types. Experiment exists in two forms:
+
+**Form A — An `experiment:` step inside a canary strategy**
+
+An experiment step runs baseline vs canary versions side by side for a
+fixed duration as a blocking gate inside a canary rollout. The rollout
+does not proceed to the next step until the experiment completes
+successfully. If the experiment fails, the rollout aborts.
+
+```yaml
+strategy:
+  canary:
+    steps:
+      - setWeight: 25
+      - experiment:              # blocking step — rollout waits here
+          duration: 1h
+          templates:
+            - name: baseline
+              specRef: stable    # runs stable image
+            - name: canary
+              specRef: canary    # runs new image
+          analyses:
+            - name: mann-whitney
+              templateName: mann-whitney
+```
+
+**Form B — A standalone `kind: Experiment` CRD**
+
+A standalone Experiment runs multiple versions simultaneously for A/B
+testing independent of any Rollout. It is not a deployment mechanism —
+it is a hypothesis-testing tool. When the experiment ends, the versions
+are torn down. No traffic shift or promotion occurs.
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Experiment          # separate CRD — not part of a Rollout
+metadata:
+  name: example-experiment
+spec:
+  duration: 20m
+  templates:
+    - name: baseline
+      specRef: stable
+    - name: canary
+      specRef: canary
+  analyses:
+    - name: analyze-job
+      templateName: analyze-job
+```
+
+Unlike canary (which gradually shifts traffic from old to new) and
+blue-green (which switches all traffic at once), an Experiment keeps
+multiple versions alive side by side for the duration of the test, then
+tears them all down. It is designed for A/B testing and hypothesis
+validation — "does version B perform better than version A?" — rather
+than for a standard production release.
+
+The Experiment CRD is an advanced pattern that requires metric
+infrastructure and careful design to be useful. It is not covered in
+this series because canary with analysis covers the vast majority of
+production progressive delivery needs.
+
+```
+Use when: you want to validate a hypothesis about two versions under
+          real production traffic before committing to either one.
+          Requires: metric provider, defined success criteria, and a
+          clear question the experiment is designed to answer.
+```
 
 ---
 
@@ -798,6 +1090,7 @@ AppProjects provide in Argo CD — but it is limited to analysis definitions
 only, not to deployment permissions or target restrictions.
 
 ---
+
 
 ### Who Accesses Argo Rollouts — The Access Model
 
