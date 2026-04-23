@@ -1,0 +1,28 @@
+# values.yaml — Argo Rollouts Helm configuration for this demo series
+dashboard:
+  # Creates a separate argo-rollouts-dashboard Deployment and Service.
+  # Access via: kubectl port-forward svc/argo-rollouts-dashboard 3100:3100 -n argo-rollouts
+  # Without this, the dashboard is only accessible via the plugin command.
+  enabled: true
+
+controller:
+  # Keep at 1 for local development. Increase to 2+ for HA in production.
+  replicas: 1
+
+  metrics:
+    # Creates the argo-rollouts-metrics Service on port 8090.
+    # This Service exposes the controller's Prometheus /metrics endpoint so that
+    # a monitoring stack (e.g. kube-prometheus-stack in Demo-09) can scrape it.
+    # Without this, the controller still exposes /metrics on port 8090 at the
+    # pod level — but there is no Kubernetes Service in front of it, so
+    # Prometheus cannot discover or scrape it via standard service discovery.
+    # Set to false if you have no Prometheus stack — it has no effect otherwise.
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
