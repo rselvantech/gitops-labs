@@ -19,6 +19,16 @@ This demo walks through all five production-relevant generators, progressing
 from the simplest (List) to the most powerful (Matrix). Each step is a
 self-contained demonstration that builds directly on the previous one.
 
+> **Prerequisite:** Complete `README-cluster-setup.md` first. This README assumes
+> both clusters (`us-east-ohio` and `middle-east-uae`) are registered with ArgoCD,
+> labelled, and verified working. The Docker network wiring must also be active.
+>
+> **Quick check before starting:**
+> ```bash
+> argocd cluster list       # both clusters must show STATUS: Successful
+> docker exec minikube nc -zv -w 3 192.168.67.2 8443   # must succeed
+> ```
+
 **What you'll learn:**
 - Why ApplicationSets exist — the scaling limits of App-of-Apps
 - The two building blocks of every ApplicationSet: generators and templates
@@ -28,13 +38,10 @@ self-contained demonstration that builds directly on the previous one.
 - The `goTemplate` and `goTemplateOptions` fields — what they do and why
 - All five generators in depth: List, Cluster, Git Directory, Git File, Matrix
 - How to choose the right generator for a given requirement
-- Multi-cluster setup using the default minikube profile and a second profile
 
 **What you'll do:**
-- Rename the default minikube profile to `us-east-ohio` to simulate a real
-  cluster name, register a second minikube profile `middle-east-uae`
-- Register the second cluster with ArgoCD and apply labels
 - Walk through all five generators end-to-end with working demos
+- Push region- and environment-specific manifests to `gitops-apps-config`
 - Combine generators with the Matrix generator to deploy dev/staging/prod
   across two regions — six Applications from one YAML
 
@@ -42,51 +49,39 @@ self-contained demonstration that builds directly on the previous one.
 
 ## Prerequisites
 
-- ✅ Completed Demo-12 — App-of-Apps pattern understood
-- ✅ ArgoCD running on minikube default profile (installed in Demo-02)
-- ✅ ArgoCD CLI installed and logged in
-- ✅ `kubectl` available in terminal
-- ✅ GitHub PAT with `Contents: Read` access to `app-config` and `argocd-config`
-  (PAT setup covered in Demo-04 — reuse the same token)
+- ✅ Completed `README-cluster-setup.md` — both clusters registered, labelled,
+  and verified. `argocd cluster list` shows both as `Successful`.
+- ✅ ArgoCD CLI logged in: `argocd login localhost:8080 --username admin --insecure`
+- ✅ Active context is `us-east-ohio`: `kubectl config use-context us-east-ohio`
+- ✅ Docker network wiring active: `docker exec minikube nc -zv -w 3 192.168.67.2 8443`
+- ✅ GitHub PAT with access to `gitops-apps-config` and `argocd-config`
+- ✅ `gitops-apps-config` already registered with ArgoCD from Demo-10
 
-**Verify Prerequisites:**
-
-### 1. ArgoCD pods running on default minikube profile
+**Verify before proceeding:**
 ```bash
-kubectl get pods -n argocd
-```
-
-**Expected:** All pods `Running` and `1/1` Ready.
-
-**Recovery:** If ArgoCD is not running, start minikube and port-forward:
-```bash
-minikube start
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-```
-
-### 2. ArgoCD CLI is installed and logged in
-```bash
-argocd version --client
-argocd login localhost:8080 --username admin --insecure
+# Both clusters registered
+argocd cluster list
 ```
 
 **Expected:**
 ```text
-argocd: v3.x.x
-'admin:login' logged in successfully
+SERVER                          NAME              VERSION  STATUS      MESSAGE
+https://kubernetes.default.svc  in-cluster        1.xx     Successful
+https://192.168.67.2:8443        middle-east-uae   1.xx     Successful
 ```
 
-### 3. Both repos registered with ArgoCD
 ```bash
-argocd repo list
+# No existing demo-13 applications (clean state from Part 1 cleanup)
+argocd app list
 ```
 
-**Expected:** `app-config` and `argocd-config` both showing `Successful`.
+**Expected:** Empty or only unrelated applications.
 
-**Recovery:** Re-register if missing:
+**Recovery — if Docker/WSL2 restarted since Part 1:**
 ```bash
-argocd repo add https://github.com/rselvantech/app-config.git \
-  --username rselvantech --password <GITHUB_PAT>
+docker network connect middle-east-uae minikube
+docker exec minikube nc -zv -w 3 192.168.67.2 8443
+# Expected: Connection ... succeeded!
 ```
 
 ---
@@ -129,32 +124,6 @@ Application CRDs dynamically.
 
 ---
 
-### Why Two Clusters — The Real-World Reasons
-
-In production, running the same application across multiple clusters is driven
-by four common requirements:
-
-**1. Geographic latency** — Serve users from the nearest cluster. A customer
-in Dubai should not have their requests routed to Ohio data centres. Each
-cluster handles traffic for its region.
-
-**2. Data residency and compliance** — Many governments mandate that user data
-must not leave the country. Separate clusters in separate regions satisfy these
-regulatory requirements without special application logic.
-
-**3. Failure domain isolation** — If the Ohio cluster has an incident (node
-failures, networking issues, a bad deployment), the UAE cluster is completely
-unaffected. Users in the Middle East continue to be served.
-
-**4. Environment separation** — Dev and staging workloads run on one cluster,
-production on another. This prevents a broken staging deployment from affecting
-production.
-
-In this demo we simulate **geographic separation** — `us-east-ohio` serves US
-users and `middle-east-uae` serves Middle East users — the most direct
-illustration of why multi-cluster deployments exist.
-
----
 
 ### How the Two Clusters Are Connected — The Control Plane Model
 
@@ -166,7 +135,7 @@ from a central location.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                     ArgoCD Control Plane Model                           │
 │                                                                          │
-│   GitHub (app-config)                                                    │
+│   GitHub (gitops-apps-config)                                                    │
 │   ┌──────────────────┐                                                   │
 │   │  us-east-ohio/   │                                                   │
 │   │  middle-east-uae/│◄──── ArgoCD pulls desired state ────┐             │
@@ -215,32 +184,50 @@ From that point on, whenever ArgoCD syncs an Application whose destination is
 authenticate to `middle-east-uae` and apply the manifests — without any further
 input from you. Your kubeconfig is no longer involved.
 
-```
-One-time setup (you run once):
-  argocd cluster add middle-east-uae
-    → creates argocd-manager SA on middle-east-uae
-    → stores credentials as Secret on us-east-ohio
-
-Every subsequent sync (ArgoCD runs automatically):
-  App Controller reads Secret → authenticates to middle-east-uae
-    → applies manifests → reconciles drift
-```
-
-**What you need access to** in this demo:
-
-| Who | Accesses | How |
-|---|---|---|
-| You (setup) | `us-east-ohio` | kubectl, kubeconfig |
-| You (setup) | `middle-east-uae` | kubectl, kubeconfig (only for `argocd cluster add`) |
-| You (day-to-day) | ArgoCD UI/CLI on `us-east-ohio` | port-forward 8080 |
-| ArgoCD | `us-east-ohio` (local) | in-cluster ServiceAccount |
-| ArgoCD | `middle-east-uae` (remote) | argocd-manager SA token stored as Secret |
-
-After setup, the only cluster you interact with directly is `us-east-ohio` via
-the ArgoCD UI and CLI. ArgoCD manages `middle-east-uae` on your behalf.
-
 ---
 
+### Why the Manifests Differ Across Region and Environment Folders
+
+A natural question when looking at the folder structure: if the application
+code is the same, why do we have `deployment.yaml` in `us-east-ohio/manifests/`,
+`middle-east-uae/manifests/`, `dev/manifests/`, `staging/manifests/`, and
+`prod/manifests/`? Are these unnecessary duplicates?
+
+They are not duplicates — each folder represents different **intent** that must
+be expressed in the manifests:
+
+**Differences across regions (`us-east-ohio` vs `middle-east-uae`):**
+
+| Field | `us-east-ohio` | `middle-east-uae` |
+|---|---|---|
+| `namespace` | `demo13-us-east-ohio` | `demo13-middle-east-uae` |
+| `ConfigMap` → `index.html` | "Region: US East Ohio" | "Region: Middle East UAE" |
+
+The namespace must differ because each cluster is a separate Kubernetes control
+plane. The ConfigMap content differs because in a real deployment, localisation
+(language, regional settings, CDN endpoints) would differ per region.
+
+**Differences across environments (`dev`, `staging`, `prod`):**
+
+| Field | `dev` | `staging` | `prod` |
+|---|---|---|---|
+| `namespace` | `demo13-dev` | `demo13-staging` | `demo13-prod` |
+| `replicas` | `1` | `2` | `3` |
+| `ConfigMap` → `index.html` | "Environment: dev" | "Environment: staging" | "Environment: prod" |
+
+**Is this the real-world pattern?**
+
+Yes — this is precisely how production GitOps works. Each environment or region
+has its own folder containing manifests that express the desired state for that
+specific target. The ApplicationSet generator discovers these folders and creates
+one Application per folder, each deploying to its intended destination.
+
+The alternative — a single manifest with templated values — would require
+Kustomize or Helm overlays. Demo-14 covers that pattern. For this demo,
+explicit per-folder manifests make the connection between generator → folder →
+Application → cluster maximally visible and easy to reason about.
+
+---
 
 ### Why ApplicationSets Exist — Beyond App-of-Apps
 
@@ -267,10 +254,6 @@ New microservice = add one directory in Git
 **The Deployment analogy:**
 Kubernetes Deployment creates Pods from a pod template. You do not write 10
 Pod YAMLs for 10 replicas — you write one Deployment and set `replicas: 10`.
-
-Similarly: ApplicationSet creates Applications from an application template.
-You do not write 60 Application YAMLs — you write one ApplicationSet and
-define the generation rules.
 
 ```
 Deployment      + pod template → creates N Pods
@@ -317,48 +300,28 @@ The template runs once per generator output item. If the generator produces
 
 ### Go Templating Syntax in ApplicationSets
 
-ApplicationSets support Go's `text/template` package for variable injection —
-the same engine used by Helm and Kubernetes itself. Enabling it via
-`goTemplate: true` unlocks a concise, expressive syntax for injecting generator
-variables into the application template.
+ApplicationSets support Go's `text/template` package for variable injection.
+Enabling it via `goTemplate: true` unlocks a concise syntax for injecting
+generator variables.
 
 **Core syntax:**
 
 ```yaml
-# Variable injection — reads a generator variable
-{{.variableName}}
-
-# Nested field access — reads a nested variable
-{{.path.basename}}      # accesses the "basename" field inside "path"
-{{.metadata.labels.region}}  # accesses nested label value
-
-# String operations
-{{.region | upper}}     # converts value to uppercase
-{{.name | lower}}       # converts value to lowercase
-{{printf "%s-%s" .env .region}}   # formats two variables together
-
-# Default value when variable might be empty
-{{default "dev" .environment}}
+{{.variableName}}                  # variable injection
+{{.path.basename}}                 # nested field access
+{{.metadata.labels.region}}        # deeply nested label value
+{{.region | upper}}                # string function
+{{default "dev" .environment}}     # default value
 ```
 
 **Why Go templating over the default:**
 
-The default ApplicationSet syntax uses simple interpolation: `{{region}}`.
-Go templating switches this to dot-notation: `{{.region}}`. The dot notation
-is richer — it supports nested field access (required for Cluster generator
-variables like `{{.metadata.labels.region}}`), string functions, and
-conditionals. It is also consistent with Helm which most teams already use.
+The default ApplicationSet syntax uses `{{region}}`. Go templating uses
+`{{.region}}`. The dot notation is required for nested field access like
+`{{.metadata.labels.region}}` (used by the Cluster generator) — not possible
+without `goTemplate: true`.
 
-```yaml
-# Default interpolation (fragile, limited)
-name: "app-{{region}}"
-
-# Go templating (powerful, consistent with Helm)
-name: "app-{{.region}}"
-name: "app-{{.metadata.labels.region}}"   # nested — not possible without goTemplate
-```
-
-**The standard production block:**
+**The standard production block — always use both together:**
 
 ```yaml
 spec:
@@ -367,10 +330,9 @@ spec:
     - "missingkey=error"
 ```
 
-`missingkey=error` is a safety net — if a template references a variable that
-the generator does not expose, the ApplicationSet fails loudly with a clear
-error instead of silently creating Applications with empty `name` or `path`
-fields. Always include both fields together.
+`missingkey=error` causes the ApplicationSet to fail loudly if a template
+references a variable the generator does not expose — instead of silently
+creating Applications with empty `name` or `path` fields.
 
 ---
 
@@ -384,85 +346,119 @@ fields. Always include both fields together.
 | **Git File** | Structured YAML files in Git | Complex parameters, version-controlled intent |
 | **Matrix** | Combines two generators | Multi-environment × multi-cluster |
 
-Each generator answers the same question — "for whom should Applications be
-created?" — using a different source of truth:
-
-**List generator** — you declare the targets directly in the ApplicationSet
-YAML as a list of items. Each item is a set of key-value pairs that become
-template variables. Simplest generator. Best for small, stable, fixed sets
-of 2-5 targets where the configuration rarely changes.
-
-**Cluster generator** — targets are determined by labels on ArgoCD-registered
-clusters. ArgoCD reads the labels from cluster registration secrets and creates
-one Application per matching cluster. New cluster added with the right label →
-Application auto-generated. Best for dynamic cluster fleets.
-
-**Git Directory generator** — targets are discovered by scanning directory
-paths in a Git repository. Each matching directory becomes one Application.
-Adding a new directory to Git creates a new Application without touching the
-ApplicationSet YAML. Best for microservice-per-directory or
-environment-per-directory patterns.
-
-**Git File generator** — targets are defined in structured YAML or JSON files
-stored in Git. Each entry in the file becomes one Application. The file is
-version-controlled and auditable separately from the ApplicationSet YAML.
-Best when parameters are complex or when different teams own the generator
-configuration vs the ApplicationSet template.
-
-**Matrix generator** — combines the output of two other generators and produces
-one Application for every valid combination. Does not create new intent — it
-multiplies existing intent from two generators. Best for deploying every
-environment to every cluster (the most common enterprise pattern).
-
 ---
 
 ### How Cluster Labels Are Stored
 
-When you register a cluster with ArgoCD and add labels, ArgoCD stores those
-labels inside a Kubernetes Secret in the `argocd` namespace. The Cluster
+When you registered clusters in Part 1 and applied labels, ArgoCD stored those
+labels inside Kubernetes Secrets in the `argocd` namespace. The Cluster
 generator reads these secrets to find clusters matching its label selector.
 
 ```bash
 # See the secrets backing registered clusters
 kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster
-
-# Inspect a cluster secret — labels are stored in the secret data
-kubectl get secret <cluster-secret-name> -n argocd -o yaml
 ```
 
-This is why adding a label to an already-registered cluster requires the
-`--upsert` flag on `argocd cluster add` — it overwrites the existing secret
-with the new labels. Without `--upsert` the command fails saying the cluster
-already exists.
+This is why the `--upsert` flag is required when updating labels on an
+already-registered cluster — it overwrites the existing Secret.
+
+---
+
+### How ArgoCD Resolves the Deployment Namespace
+
+Every Kubernetes resource that is namespace-scoped (Deployment, Service,
+ConfigMap, etc.) must land in a specific namespace. There are two places
+this can be specified — and understanding which one wins is important:
+
+**1. Inside the manifest (`metadata.namespace`)**
+
+```yaml
+metadata:
+  name: demo13-app
+  namespace: demo13-us-east-ohio   # hardcoded in the file
+```
+
+**2. In the Application CRD (`destination.namespace`)**
+
+```yaml
+destination:
+  name: in-cluster
+  namespace: demo13-us-east-ohio   # set by the ApplicationSet template
+```
+
+**The rule: manifest namespace always wins over destination namespace.**
+
+If a resource has `metadata.namespace` set, Kubernetes applies it to that
+exact namespace — regardless of what `destination.namespace` says. ArgoCD
+does not rewrite manifest namespaces. This means:
+
+- `destination.namespace: demo13-us-east-ohio-gf` in the Application
+- `metadata.namespace: demo13-us-east-ohio` in the manifest
+
+→ ArgoCD tries to create the resource in `demo13-us-east-ohio` (from the
+manifest), not `demo13-us-east-ohio-gf` (from the destination). If
+`demo13-us-east-ohio` does not exist on that cluster, the sync fails with
+`namespace "demo13-us-east-ohio" not found`.
+
+**Without `metadata.namespace` in the manifest (the correct pattern):**
+
+```yaml
+metadata:
+  name: demo13-app
+  # no namespace field
+```
+
+ArgoCD deploys the resource into `destination.namespace` from the Application
+CRD. The ApplicationSet template controls the namespace entirely — one manifest
+works for any namespace the generator produces.
+
+```
+Generator variable  →  destination.namespace  →  resource lands here
+{{.namespace}}         demo13-us-east-ohio-gf     demo13-us-east-ohio-gf  ✅
+{{.namespace}}         demo13-dev                 demo13-dev              ✅
+{{.namespace}}         demo13-prod-middle-east-uae demo13-prod-middle-east-uae ✅
+```
+
+**Why this matters for ApplicationSets specifically:**
+
+ApplicationSets are designed to deploy the same manifest to many different
+namespaces via generator variables. Hardcoding `metadata.namespace` in the
+manifest defeats this entirely — every generated Application would fight the
+manifest for namespace control. Keeping manifests namespace-free is what makes
+the generator's `destination.namespace` variable actually work.
+
+> **Rule of thumb:** Never hardcode `metadata.namespace` in manifests managed
+> by ArgoCD. Let `destination.namespace` in the Application CRD own it.
+> `CreateNamespace=true` in `syncOptions` handles namespace creation automatically.
 
 ---
 
 ## Folder Structure
 
 ```
-13-applicationsets/src/
-├── app-config/                          ← rselvantech/app-config (private)
-│   └── demo-13-applicationsets/
+13-applicationset/src/
+├── gitops-apps-config/                          ← rselvantech/gitops-apps-config (private)
+│   └── demo-13-applicationset/
 │       ├── us-east-ohio/
 │       │   └── manifests/
-│       │       ├── deployment.yaml
+│       │       ├── deployment.yaml   ← namespace: demo13-us-east-ohio, US index.html
 │       │       └── service.yaml
 │       ├── middle-east-uae/
 │       │   └── manifests/
-│       │       ├── deployment.yaml
+│       │       ├── deployment.yaml   ← namespace: demo13-middle-east-uae, UAE index.html
 │       │       └── service.yaml
 │       ├── dev/
 │       │   └── manifests/
-│       │       └── deployment.yaml
+│       │       └── deployment.yaml   ← namespace: demo13-dev, replicas: 1
 │       ├── staging/
 │       │   └── manifests/
-│       │       └── deployment.yaml
+│       │       └── deployment.yaml   ← namespace: demo13-staging, replicas: 2
 │       ├── prod/
 │       │   └── manifests/
-│       │       └── deployment.yaml
-│       └── clusters.yaml               ← used by Git File generator
-└── argocd-config/                       ← rselvantech/argocd-config
-    └── demo-13-applicationsets/
+│       │       └── deployment.yaml   ← namespace: demo13-prod, replicas: 3
+│       └── clusters.yaml             ← used by Git File generator
+└── argocd-config/                    ← rselvantech/argocd-config
+    └── demo-13-applicationset/
         ├── 01-list-generator.yaml
         ├── 02-cluster-generator.yaml
         ├── 03-git-directory-generator.yaml
@@ -470,200 +466,57 @@ already exists.
         └── 05-matrix-generator.yaml
 ```
 
-**What exists in GitHub after all pushes:**
-
-```
-rselvantech/app-config (GitHub)
-├── demo-11-sync-waves/          ← Demo-11 (untouched)
-├── demo-12-app-of-apps/         ← Demo-12 (untouched)
-└── demo-13-applicationsets/     ← Demo-13 adds this
-    ├── us-east-ohio/manifests/
-    ├── middle-east-uae/manifests/
-    ├── dev/manifests/
-    ├── staging/manifests/
-    ├── prod/manifests/
-    └── clusters.yaml
-
-rselvantech/argocd-config (GitHub)
-├── demo-11-sync-waves/          ← Demo-11 (untouched)
-├── demo-12-app-of-apps/         ← Demo-12 (untouched)
-└── demo-13-applicationsets/     ← Demo-13 adds this
-    ├── 01-list-generator.yaml
-    ├── 02-cluster-generator.yaml
-    ├── 03-git-directory-generator.yaml
-    ├── 04-git-file-generator.yaml
-    └── 05-matrix-generator.yaml
-```
-
 ---
 
-## Step 1: Multi-Cluster Setup — Rename Default Profile and Add Second Cluster
+## Step 1: Add All Manifests to `gitops-apps-config`
 
-This demo simulates a two-cluster environment. Rather than creating fresh
-clusters from scratch (which would require reinstalling ArgoCD), we reuse the
-existing default minikube profile where ArgoCD is already running — renaming it
-to reflect a real-world region name — and add a second lightweight profile
-representing a second region.
+All five generators read application manifests from `gitops-apps-config`.
+All manifests are pushed now — in a single step — so that each generator step
+only requires applying one ApplicationSet YAML.
 
-### Step 1a: Rename the default profile to `us-east-ohio`
+The folder structure directly maps to what each generator discovers:
+- `us-east-ohio/manifests/` and `middle-east-uae/manifests/` → List + Cluster generators
+- `dev/`, `staging/`, `prod/` → Git Directory + Matrix generators
+- `clusters.yaml` → Git File generator
 
-minikube does not support renaming profiles directly. The workaround is to
-update the kubeconfig context name, which is what ArgoCD and kubectl use:
 
+**Initialise local repo structure:**
 ```bash
-# Rename the context in kubeconfig from 'minikube' to 'us-east-ohio'
-kubectl config rename-context minikube us-east-ohio
-```
-
-**Verify:**
-```bash
-kubectl config get-contexts
-```
-
-**Expected:**
-```text
-CURRENT   NAME           CLUSTER    AUTHINFO   NAMESPACE
-*         us-east-ohio   minikube   minikube
-```
-
-All ArgoCD pods and previous demo resources are still running — only the
-context name changed. The cluster itself is unchanged.
-
-### Step 1b: Start the second cluster — `middle-east-uae`
-
-```bash
-minikube start -p middle-east-uae --cpus 2 --memory 2048
-```
-
-This starts a second, independent minikube cluster in a new profile. ArgoCD
-is NOT installed here — it only runs in the `us-east-ohio` (default) cluster.
-
-**Verify:**
-```bash
-kubectl config get-contexts
-```
-
-**Expected:**
-```text
-CURRENT   NAME              CLUSTER           AUTHINFO          NAMESPACE
-          us-east-ohio      minikube          minikube
-*         middle-east-uae   middle-east-uae   middle-east-uae
-```
-
-> The asterisk is on `middle-east-uae` because it was created last. All
-> ArgoCD commands must target `us-east-ohio`. Switch context now:
-> ```bash
-> kubectl config use-context us-east-ohio
-> ```
-
-**Verify ArgoCD is still healthy on `us-east-ohio`:**
-```bash
-kubectl config use-context us-east-ohio
-kubectl get pods -n argocd
-```
-
-**Expected:** All ArgoCD pods `Running` and `1/1` Ready.
-
-### Step 1c: Log in to ArgoCD CLI
-
-```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443 &
-argocd login localhost:8080 --username admin --insecure
-```
-
-**Expected:**
-```text
-'admin:login' logged in successfully
-```
-
-### Step 1d: Register `middle-east-uae` cluster with ArgoCD
-
-ArgoCD is running in `us-east-ohio` and must be told about `middle-east-uae`
-before it can deploy resources there.
-
-```bash
-argocd cluster add middle-east-uae \
-  --label app=demo13 \
-  --label region=middle-east-uae \
-  --name middle-east-uae
-```
-
-> **What this command does:**
-> 1. Reads your local kubeconfig to find the `middle-east-uae` cluster
->    credentials
-> 2. Connects to `middle-east-uae` and creates an `argocd-manager`
->    ServiceAccount with cluster-admin permissions
-> 3. Stores the cluster URL, CA certificate, and ServiceAccount token as a
->    Secret in the `argocd` namespace on `us-east-ohio`
-> 4. Tags the secret with the labels you provide — used by the Cluster
->    generator in Step 5
->
-> **Why labels at registration time:** The Cluster generator (Step 5) selects
-> clusters by label. Providing labels now avoids a separate `--upsert` step later.
-
-**When prompted:** Type `y` to confirm ServiceAccount creation.
-
-**Verify both clusters visible to ArgoCD:**
-```bash
-argocd cluster list
-```
-
-**Expected:**
-```text
-SERVER                          NAME              STATUS
-https://kubernetes.default.svc  in-cluster        Successful
-https://192.168.x.x:8443        middle-east-uae   Successful
-```
-
-### Step 1e: Add labels to the `us-east-ohio` (in-cluster) cluster
-
-The `in-cluster` cluster was auto-registered when ArgoCD started. It has no
-labels yet. Add them via the ArgoCD UI so the Cluster generator can select it:
-
-```
-http://localhost:8080
-→ Settings → Clusters → in-cluster → Edit
-→ Add labels:
-    app=demo13
-    region=us-east-ohio
-→ Save
-```
-
-**Verify via CLI:**
-```bash
-kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster -o yaml \
-  | grep -A5 "labels:"
-```
-
-**Expected:** Both cluster secrets show `app: demo13` and their respective
-`region` labels.
-
----
-
-## Step 2: Add All Manifests to `app-config`
-
-All five generators in this demo read application manifests from `app-config`.
-All manifests are pushed now so each generator step only requires applying
-the ApplicationSet YAML.
-
-**Initialise local repo:**
-```bash
-cd gitops-labs/argo-cd-basics-to-prod/13-applicationsets/src
-mkdir app-config && cd app-config
+cd argo-cd-basics-to-prod/13-applicationset/src
+mkdir -p gitops-apps-config && cd gitops-apps-config
 
 git init
 git branch -M main
-git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/app-config.git
+git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/gitops-apps-config.git
 git pull origin main --allow-unrelated-histories --no-rebase
 ```
 
-**`demo-13-applicationsets/us-east-ohio/manifests/deployment.yaml`:**
+**Create Files:**
+```bash
+mkdir -p demo-13-applicationset/us-east-ohio/manifests
+mkdir -p demo-13-applicationset/middle-east-uae/manifests
+mkdir -p demo-13-applicationset/dev/manifests
+mkdir -p demo-13-applicationset/staging/manifests
+mkdir -p demo-13-applicationset/prod/manifests
+
+touch demo-13-applicationset/us-east-ohio/manifests/deployment.yaml
+touch demo-13-applicationset/us-east-ohio/manifests/service.yaml
+touch demo-13-applicationset/middle-east-uae/manifests/deployment.yaml
+touch demo-13-applicationset/middle-east-uae/manifests/service.yaml
+touch demo-13-applicationset/dev/manifests/deployment.yaml
+touch demo-13-applicationset/staging/manifests/deployment.yaml
+touch demo-13-applicationset/prod/manifests/deployment.yaml
+touch demo-13-applicationset/clusters.yaml
+
+```
+
+
+**`demo-13-applicationset/us-east-ohio/manifests/deployment.yaml`:**
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo13-app
-  namespace: demo13-us-east-ohio
 spec:
   replicas: 1
   selector:
@@ -691,7 +544,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo13-config
-  namespace: demo13-us-east-ohio
 data:
   index.html: |
     <html><body>
@@ -701,13 +553,12 @@ data:
     </body></html>
 ```
 
-**`demo-13-applicationsets/us-east-ohio/manifests/service.yaml`:**
+**`demo-13-applicationset/us-east-ohio/manifests/service.yaml`:**
 ```yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: demo13-svc
-  namespace: demo13-us-east-ohio
 spec:
   selector:
     app: demo13-app
@@ -716,13 +567,12 @@ spec:
       targetPort: 80
 ```
 
-**`demo-13-applicationsets/middle-east-uae/manifests/deployment.yaml`:**
+**`demo-13-applicationset/middle-east-uae/manifests/deployment.yaml`:**
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo13-app
-  namespace: demo13-middle-east-uae
 spec:
   replicas: 1
   selector:
@@ -750,7 +600,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo13-config
-  namespace: demo13-middle-east-uae
 data:
   index.html: |
     <html><body>
@@ -760,13 +609,12 @@ data:
     </body></html>
 ```
 
-**`demo-13-applicationsets/middle-east-uae/manifests/service.yaml`:**
+**`demo-13-applicationset/middle-east-uae/manifests/service.yaml`:**
 ```yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: demo13-svc
-  namespace: demo13-middle-east-uae
 spec:
   selector:
     app: demo13-app
@@ -775,13 +623,12 @@ spec:
       targetPort: 80
 ```
 
-**`demo-13-applicationsets/dev/manifests/deployment.yaml`** (1 replica):
+**`demo-13-applicationset/dev/manifests/deployment.yaml`** (1 replica):
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo13-app
-  namespace: demo13-dev
 spec:
   replicas: 1
   selector:
@@ -807,7 +654,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo13-config
-  namespace: demo13-dev
 data:
   index.html: |
     <html><body>
@@ -817,13 +663,12 @@ data:
     </body></html>
 ```
 
-**`demo-13-applicationsets/staging/manifests/deployment.yaml`** (2 replicas):
+**`demo-13-applicationset/staging/manifests/deployment.yaml`** (2 replicas):
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo13-app
-  namespace: demo13-staging
 spec:
   replicas: 2
   selector:
@@ -849,7 +694,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo13-config
-  namespace: demo13-staging
 data:
   index.html: |
     <html><body>
@@ -859,13 +703,12 @@ data:
     </body></html>
 ```
 
-**`demo-13-applicationsets/prod/manifests/deployment.yaml`** (3 replicas):
+**`demo-13-applicationset/prod/manifests/deployment.yaml`** (3 replicas):
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo13-app
-  namespace: demo13-prod
 spec:
   replicas: 3
   selector:
@@ -891,7 +734,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: demo13-config
-  namespace: demo13-prod
 data:
   index.html: |
     <html><body>
@@ -901,7 +743,7 @@ data:
     </body></html>
 ```
 
-**`demo-13-applicationsets/clusters.yaml`** (for Git File generator — Step 6):
+**`demo-13-applicationset/clusters.yaml`** (for Git File generator — Step 5):
 ```yaml
 - name: us-east-ohio
   region: us-east-ohio
@@ -915,22 +757,21 @@ data:
 
 **Push all manifests:**
 ```bash
-git add demo-13-applicationsets/
-git commit -m "feat: add demo-13 applicationsets manifests for all five generators"
+git add demo-13-applicationset/
+git commit -m "feat: add demo-13 applicationset manifests for all five generators"
 git push origin main
 ```
 
 ---
 
-## Step 3: Set Up `argocd-config` Local Repo
+## Step 2: Set Up `argocd-config` Local Repo
 
-All ApplicationSet YAMLs are stored in `argocd-config` — the same repo used
-since Demo-12 which ArgoCD already watches. Each generator step adds one file
-here.
+All ApplicationSet YAMLs are stored in `argocd-config` — the same repo
+ArgoCD already watches. Each generator step adds one file here.
 
 ```bash
-cd gitops-labs/argo-cd-basics-to-prod/13-applicationsets/src
-mkdir argocd-config && cd argocd-config
+cd argo-cd-basics-to-prod/13-applicationset/src
+mkdir -p argocd-config && cd argocd-config
 
 git init
 git branch -M main
@@ -940,15 +781,13 @@ git pull origin main --allow-unrelated-histories --no-rebase
 
 ---
 
-## Step 4: Generator 1 — List Generator
+## Step 3: Generator 1 — List Generator
 
 ### What this step demonstrates
 
 We deploy the same nginx application to two clusters — `us-east-ohio` and
 `middle-east-uae` — using one ApplicationSet YAML with a List generator.
-The list of targets is defined directly inline. This is the simplest
-generator and the best starting point for understanding how generators and
-templates interact.
+The list of targets is defined directly inline.
 
 ### About the List Generator
 
@@ -957,29 +796,43 @@ ApplicationSet YAML. Each element is a set of key-value pairs you choose
 freely. ArgoCD iterates over the list and runs the template once per element,
 injecting the key-value pairs as template variables.
 
+**How it works:**
+
+```
+generators.list.elements[0]:          generators.list.elements[1]:
+  region: us-east-ohio                  region: middle-east-uae
+  clusterName: in-cluster               clusterName: middle-east-uae
+  namespace: demo13-us-east-ohio        namespace: demo13-middle-east-uae
+         │                                      │
+         ▼ template runs with element[0]         ▼ template runs with element[1]
+Application: demo13-us-east-ohio       Application: demo13-middle-east-uae
+  path: .../us-east-ohio/manifests       path: .../middle-east-uae/manifests
+  destination: in-cluster                destination: middle-east-uae
+```
+
 **Key fields:**
 ```yaml
 generators:
   - list:
       elements:
-        - key1: value1    # any keys you choose — referenced in template as {{.key1}}
+        - key1: value1    # any keys you choose — referenced as {{.key1}}
           key2: value2
         - key1: value3
           key2: value4
 ```
 
-**How it works:** The generator exposes only the keys you define in `elements`.
-No automatic variables — everything must be explicitly declared. This makes it
-transparent and easy to reason about, but it means adding a new target requires
-editing the ApplicationSet YAML.
+**When to use:** 2 to 5 deployment targets with a stable, known list. Getting
+started with ApplicationSets — lowest cognitive overhead.
 
-**When to use:**
-- 2 to 5 deployment targets with a stable, known list
-- Getting started with ApplicationSets — lowest cognitive overhead
-- When targets are permanent and rarely change
+**Create `demo-13-applicationset/01-list-generator.yaml` in `argocd-config`:**
 
-**Create `demo-13-applicationsets/01-list-generator.yaml` in `argocd-config`:**
 
+```bash
+cd argo-cd-basics-to-prod/13-applicationset/src/argocd-config
+touch demo-13-applicationset/02-cluster-generator.yaml
+```
+
+**`demo-13-applicationset/01-list-generator.yaml`:**
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -1005,11 +858,11 @@ spec:
     spec:
       project: default
       source:
-        repoURL: https://github.com/rselvantech/app-config.git
-        targetRevision: HEAD
-        path: "demo-13-applicationsets/{{.region}}/manifests"
-        # → demo-13-applicationsets/us-east-ohio/manifests
-        # → demo-13-applicationsets/middle-east-uae/manifests
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        targetRevision: main
+        path: "demo-13-applicationset/{{.region}}/manifests"
+        # → demo-13-applicationset/us-east-ohio/manifests
+        # → demo-13-applicationset/middle-east-uae/manifests
       destination:
         name: "{{.clusterName}}"        # → in-cluster, middle-east-uae
         namespace: "{{.namespace}}"     # → demo13-us-east-ohio, demo13-middle-east-uae
@@ -1021,14 +874,35 @@ spec:
           - CreateNamespace=true
 ```
 
+### Variable-to-Manifest Tracing: List Generator
+
+```
+List element[0]:
+  region: "us-east-ohio"
+  clusterName: "in-cluster"
+  namespace: "demo13-us-east-ohio"
+         │  template substitution
+         ▼
+Application CRD:
+  metadata.name: "demo13-us-east-ohio"           ← {{.region}}
+  spec.source.path: ".../us-east-ohio/manifests"  ← {{.region}}
+  spec.destination.name: "in-cluster"             ← {{.clusterName}}
+  spec.destination.namespace: "demo13-us-east-ohio" ← {{.namespace}}
+         │  ArgoCD syncs
+         ▼
+Manifests: us-east-ohio/manifests/deployment.yaml
+  → Deployed to: in-cluster, namespace: demo13-us-east-ohio
+  → nginx with "Region: US East Ohio" index.html
+```
+
 **Push and apply:**
 ```bash
-git add demo-13-applicationsets/01-list-generator.yaml
+git add demo-13-applicationset/01-list-generator.yaml
 git commit -m "feat: add demo-13 list generator ApplicationSet"
 git push origin main
 
 kubectl config use-context us-east-ohio
-kubectl apply -f demo-13-applicationsets/01-list-generator.yaml
+kubectl apply -f demo-13-applicationset/01-list-generator.yaml
 ```
 
 **Verify ApplicationSet created:**
@@ -1049,12 +923,12 @@ argocd app list
 
 **Expected:**
 ```text
-NAME                     SYNC STATUS   HEALTH STATUS
-demo13-us-east-ohio      Synced        Healthy
-demo13-middle-east-uae   Synced        Healthy
+NAME                     CLUSTER           SYNC STATUS   HEALTH STATUS
+demo13-us-east-ohio      in-cluster        Synced        Healthy
+demo13-middle-east-uae   middle-east-uae   Synced        Healthy
 ```
 
-**Verify pods on `us-east-ohio` (in-cluster):**
+**Verify pods on `us-east-ohio`:**
 ```bash
 kubectl config use-context us-east-ohio
 kubectl get pods -n demo13-us-east-ohio
@@ -1095,40 +969,43 @@ kubectl port-forward svc/demo13-svc -n demo13-middle-east-uae 8082:80
 Open `http://localhost:8082` — page shows "Region: Middle East UAE".
 
 **Key observation:** One ApplicationSet YAML created two Applications deployed
-to two different clusters. To add a third region, add one more item to
-`elements` — no new Application YAML needed.
+to two different clusters. To add a third region, add one more element to the
+list and create its manifests folder — no new Application YAML needed.
 
 **Clean up before next step:**
 ```bash
 kubectl config use-context us-east-ohio
+
+#Delete ApplicationSet
 kubectl delete appset demo13-list-generator -n argocd
+
+#Verify Applications are deleted
+argocd app list
+
+#Delete Namespace
+kubectl delete ns demo13-us-east-ohio
+kubectl config use-context middle-east-uae
+kubectl delete ns demo13-middle-east-uae
+
+kubectl config use-context us-east-ohio
 ```
 
 ---
 
-## Step 5: Generator 2 — Cluster Generator
+## Step 4: Generator 2 — Cluster Generator
 
 ### What this step demonstrates
 
-We achieve the same two-cluster deployment as Step 4, but this time the
-targets are not declared in the ApplicationSet YAML — they are discovered
-automatically from labels on the registered clusters. Adding a new cluster
-with the right label will auto-generate an Application with zero YAML changes.
+The same two-cluster deployment as Step 3, but targets are discovered
+automatically from labels on registered clusters — not declared inline.
+Adding a new cluster with the right label auto-generates an Application with
+zero YAML changes.
 
 ### About the Cluster Generator
 
-The Cluster generator scans ArgoCD's registered cluster secrets in the `argocd`
-namespace and selects those matching a label selector. For each matching cluster,
-it exposes the cluster's metadata as template variables.
-
-**Key fields:**
-```yaml
-generators:
-  - clusters:
-      selector:
-        matchLabels:
-          app: demo13       # select all clusters with this label
-```
+The Cluster generator scans ArgoCD's registered cluster Secrets in the `argocd`
+namespace and selects those matching a label selector. The labels you applied
+in Part 1 (`app=demo13`, `region=<n>`) are exactly what this generator reads.
 
 **Template variables exposed by the Cluster generator:**
 
@@ -1137,20 +1014,19 @@ generators:
 | `{{.name}}` | Cluster name as registered | `in-cluster`, `middle-east-uae` |
 | `{{.server}}` | Cluster API server URL | `https://kubernetes.default.svc` |
 | `{{.metadata.labels.<key>}}` | Any label on the cluster | `{{.metadata.labels.region}}` |
-| `{{.metadata.annotations.<key>}}` | Any annotation on cluster | — |
 
-> Unlike the List generator where you define all variables explicitly, the
-> Cluster generator exposes variables derived from the cluster Secret's
-> metadata. This is why `goTemplate: true` is essential here — dot-notation
-> is required to access nested fields like `{{.metadata.labels.region}}`.
+> `goTemplate: true` is essential here — dot-notation is required to access
+> nested fields like `{{.metadata.labels.region}}`.
 
-**When to use:**
-- Dynamic cluster fleets where clusters are added and removed regularly
-- When the set of deployment targets changes over time
-- When teams manage clusters independently and just need to apply a label
-  to onboard into the ApplicationSet
+**When to use:** Dynamic cluster fleets where clusters are added and removed
+regularly. Adding a new cluster with the right label → Application auto-generated.
 
-**Create `demo-13-applicationsets/02-cluster-generator.yaml`:**
+```bash
+cd argo-cd-basics-to-prod/13-applicationset/src/argocd-config
+touch demo-13-applicationset/02-cluster-generator.yaml
+```
+
+**Create `demo-13-applicationset/02-cluster-generator.yaml`:**
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -1166,21 +1042,19 @@ spec:
     - clusters:
         selector:
           matchLabels:
-            app: demo13             # selects both clusters labelled in Step 1
+            app: demo13       # selects both clusters labelled in Part 1
   template:
     metadata:
       name: "demo13-{{.metadata.labels.region}}"
       # → demo13-us-east-ohio, demo13-middle-east-uae
-      # reads the 'region' label set during cluster registration
     spec:
       project: default
       source:
-        repoURL: https://github.com/rselvantech/app-config.git
-        targetRevision: HEAD
-        path: "demo-13-applicationsets/{{.metadata.labels.region}}/manifests"
-        # → us-east-ohio/manifests, middle-east-uae/manifests
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        targetRevision: main
+        path: "demo-13-applicationset/{{.metadata.labels.region}}/manifests"
       destination:
-        name: "{{.name}}"           # cluster name as registered in ArgoCD
+        name: "{{.name}}"          # cluster name as registered in ArgoCD
         namespace: "demo13-{{.metadata.labels.region}}"
       syncPolicy:
         automated:
@@ -1190,14 +1064,47 @@ spec:
           - CreateNamespace=true
 ```
 
+### Variable-to-Cluster Tracing: Cluster Generator
+
+```
+Cluster Secret (in argocd namespace on us-east-ohio):
+  data.name: "in-cluster"
+  metadata.labels:
+    app: "demo13"           ← matches selector → cluster included
+    region: "us-east-ohio"  ← exposed as {{.metadata.labels.region}}
+         │  template substitution
+         ▼
+Application CRD:
+  metadata.name: "demo13-us-east-ohio"            ← {{.metadata.labels.region}}
+  spec.source.path: ".../us-east-ohio/manifests"   ← {{.metadata.labels.region}}
+  spec.destination.name: "in-cluster"              ← {{.name}}
+  spec.destination.namespace: "demo13-us-east-ohio" ← {{.metadata.labels.region}}
+         │  ArgoCD syncs
+         ▼
+Manifests: us-east-ohio/manifests/ → deployed to in-cluster
+
+────────────────────────────────────────────────
+
+Cluster Secret for second cluster:
+  data.name: "middle-east-uae"
+  metadata.labels.region: "middle-east-uae"
+         ▼
+Application CRD:
+  metadata.name: "demo13-middle-east-uae"
+  spec.source.path: ".../middle-east-uae/manifests"
+  spec.destination.name: "middle-east-uae"
+         ▼
+Manifests: middle-east-uae/manifests/ → deployed to middle-east-uae cluster
+```
+
 **Push and apply:**
 ```bash
-git add demo-13-applicationsets/02-cluster-generator.yaml
+git add demo-13-applicationset/02-cluster-generator.yaml
 git commit -m "feat: add demo-13 cluster generator ApplicationSet"
 git push origin main
 
 kubectl config use-context us-east-ohio
-kubectl apply -f demo-13-applicationsets/02-cluster-generator.yaml
+kubectl apply -f demo-13-applicationset/02-cluster-generator.yaml
 ```
 
 **Verify two Applications generated — driven by cluster labels:**
@@ -1207,20 +1114,9 @@ argocd app list
 
 **Expected:**
 ```text
-NAME                     SYNC STATUS   HEALTH STATUS
-demo13-us-east-ohio      Synced        Healthy
-demo13-middle-east-uae   Synced        Healthy
-```
-
-**Inspect the cluster secrets that power this generator:**
-```bash
-kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster
-```
-
-**Expected:**
-```text
-NAME                       TYPE     DATA   AGE
-cluster-middle-east-uae-x  Opaque   3      xxm
+NAME                     CLUSTER           SYNC STATUS   HEALTH STATUS
+demo13-us-east-ohio      in-cluster        Synced        Healthy
+demo13-middle-east-uae   middle-east-uae   Synced        Healthy
 ```
 
 **Key observation — label-driven fleet:**
@@ -1233,56 +1129,62 @@ deleted. Add the label back and it reappears — no ApplicationSet YAML touched.
 kubectl delete appset demo13-cluster-generator -n argocd
 ```
 
+**Clean up before next step:**
+```bash
+kubectl config use-context us-east-ohio
+
+#Delete ApplicationSet
+kubectl delete appset demo13-list-generator -n argocd
+
+#Verify Applications are removed
+argocd app list
+
+#Delete Namespace
+kubectl delete ns demo13-us-east-ohio
+kubectl config use-context middle-east-uae
+kubectl delete ns demo13-middle-east-uae
+
+kubectl config use-context us-east-ohio
+```
+
 ---
 
-## Step 6: Generator 3 — Git Directory Generator
+## Step 5: Generator 3 — Git Directory Generator
 
 ### What this step demonstrates
 
-We deploy three environment versions of the application (dev, staging, prod)
-to the `us-east-ohio` cluster by discovering directories in the `app-config`
-repository. Adding a new environment directory to Git automatically creates a
-new Application — no ApplicationSet YAML change required.
+We deploy three environment versions (dev, staging, prod) to `us-east-ohio`
+by discovering directories in `gitops-apps-config`. Adding a new environment
+directory to Git automatically creates a new Application — no ApplicationSet
+YAML change required.
 
 ### About the Git Directory Generator
 
 The Git Directory generator scans specified path patterns in a Git repository
-and creates one Application for each matching directory. The directory structure
-in Git becomes the source of truth for what Applications exist.
+and creates one Application for each matching directory.
 
-**Key fields:**
-```yaml
-generators:
-  - git:
-      repoURL: https://github.com/org/app-config.git
-      revision: HEAD
-      directories:
-        - path: "some/path/*"     # pattern — discovers all matching directories
-          exclude: false          # include these (default)
-        - path: "some/path/*/manifests"
-          exclude: true           # exclude inner directories from selection
-```
-
-**Template variables exposed by the Git Directory generator:**
+**Template variables exposed:**
 
 | Variable | Value | Example |
 |---|---|---|
-| `{{.path.path}}` | Full path of discovered directory | `demo-13-applicationsets/dev` |
+| `{{.path.path}}` | Full path of discovered directory | `demo-13-applicationset/dev` |
 | `{{.path.basename}}` | Directory name only | `dev` |
-| `{{.path.segments}}` | Path split into array | `["demo-13-applicationsets", "dev"]` |
-| `{{.path[N]}}` | Nth segment of the path | `demo-13-applicationsets` (index 0) |
 
-> **Why the `exclude` pattern is needed:**
-> If your structure is `dev/manifests/deployment.yaml`, the generator discovers
-> both `dev` and `dev/manifests` as separate paths — creating two Applications
-> per environment. Explicitly excluding `*/manifests` prevents this.
+> **Why the `exclude` pattern is needed:** If your structure is
+> `dev/manifests/deployment.yaml`, the generator discovers both `dev` and
+> `dev/manifests` as separate paths — creating two Applications per environment.
+> Explicitly excluding `*/manifests` prevents this.
 
-**When to use:**
-- Microservice-per-directory pattern — one team, one directory, one Application
-- Environment-per-directory pattern — dev, staging, prod as top-level directories
-- When the list of Applications should grow automatically as directories are added
+**When to use:** Microservice-per-directory or environment-per-directory
+patterns where the list of Applications should grow automatically as directories
+are added.
 
-**Create `demo-13-applicationsets/03-git-directory-generator.yaml`:**
+```bash
+cd argo-cd-basics-to-prod/13-applicationset/src/argocd-config
+touch demo-13-applicationset/03-git-directory-generator.yaml
+```
+
+**Create `demo-13-applicationset/03-git-directory-generator.yaml`:**
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -1296,29 +1198,28 @@ spec:
     - "missingkey=error"
   generators:
     - git:
-        repoURL: https://github.com/rselvantech/app-config.git
-        revision: HEAD
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        revision: main
         directories:
-          - path: "demo-13-applicationsets/*/manifests"
-            exclude: true         # do NOT generate Applications for manifests/ directories
-          - path: "demo-13-applicationsets/*"
-            exclude: false        # generate Applications for dev, staging, prod, us-east-ohio, middle-east-uae
+          - path: "demo-13-applicationset/*/manifests"
+            exclude: true         # do NOT generate for manifests/ subdirectories
+          - path: "demo-13-applicationset/*"
+            exclude: false        # generate for dev, staging, prod (and region folders)
   template:
     metadata:
       name: "demo13-{{.path.basename}}"
       # → demo13-dev, demo13-staging, demo13-prod
-      # (also picks up us-east-ohio, middle-east-uae — acceptable for demo purposes)
     spec:
       project: default
       source:
-        repoURL: https://github.com/rselvantech/app-config.git
-        targetRevision: HEAD
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        targetRevision: main
         path: "{{.path.path}}/manifests"
-        # → demo-13-applicationsets/dev/manifests
-        # → demo-13-applicationsets/staging/manifests
-        # → demo-13-applicationsets/prod/manifests
+        # → demo-13-applicationset/dev/manifests
+        # → demo-13-applicationset/staging/manifests
+        # → demo-13-applicationset/prod/manifests
       destination:
-        name: in-cluster          # deploy all environments to the us-east-ohio cluster
+        name: in-cluster
         namespace: "demo13-{{.path.basename}}"
       syncPolicy:
         automated:
@@ -1328,17 +1229,42 @@ spec:
           - CreateNamespace=true
 ```
 
+### Variable-to-Manifest Tracing: Git Directory Generator
+
+```
+Git repo scan — directories matching "demo-13-applicationset/*":
+  demo-13-applicationset/dev        ← discovered
+  demo-13-applicationset/staging    ← discovered
+  demo-13-applicationset/prod       ← discovered
+  demo-13-applicationset/dev/manifests ← excluded by exclude rule
+
+For discovered path "demo-13-applicationset/dev":
+  {{.path.path}}     = "demo-13-applicationset/dev"
+  {{.path.basename}} = "dev"
+         │  template substitution
+         ▼
+Application CRD:
+  metadata.name: "demo13-dev"                       ← {{.path.basename}}
+  spec.source.path: "demo-13-applicationset/dev/manifests" ← {{.path.path}}/manifests
+  spec.destination.namespace: "demo13-dev"          ← {{.path.basename}}
+         │  ArgoCD syncs
+         ▼
+Manifests: dev/manifests/deployment.yaml
+  → replicas=1, namespace=demo13-dev
+  → Deployed to: in-cluster
+```
+
 **Push and apply:**
 ```bash
-git add demo-13-applicationsets/03-git-directory-generator.yaml
+git add demo-13-applicationset/03-git-directory-generator.yaml
 git commit -m "feat: add demo-13 git directory generator ApplicationSet"
 git push origin main
 
 kubectl config use-context us-east-ohio
-kubectl apply -f demo-13-applicationsets/03-git-directory-generator.yaml
+kubectl apply -f demo-13-applicationset/03-git-directory-generator.yaml
 ```
 
-**Watch Applications appear — one per directory:**
+**Watch Applications appear:**
 ```bash
 watch -n 2 'argocd app list'
 ```
@@ -1353,64 +1279,83 @@ demo13-us-east-ohio      Synced        Healthy
 demo13-middle-east-uae   Synced        Healthy
 ```
 
-**Verify replica counts reflect environment manifests:**
+**Verify Pods and replica counts reflect environment manifests:**
 ```bash
-kubectl get deployment demo13-app -n demo13-dev \
-  -o jsonpath='{.spec.replicas}'
-# → 1
+kubectl get pods -n demo13-dev
+#replica=1
 
-kubectl get deployment demo13-app -n demo13-prod \
-  -o jsonpath='{.spec.replicas}'
-# → 3
+kubectl get pods -n demo13-staging 
+#replica=2
+
+kubectl get pods -n demo13-prod
+#replica=3
+
+##replica=1 for below
+kubectl get pods -n demo13-us-east-ohio
+kubectl get pods -n demo13-middle-east-uae
 ```
 
 **Prove directory = new Application — no YAML change needed:**
 ```bash
-# In app-config local repo — add a hotfix environment
-mkdir -p demo-13-applicationsets/hotfix/manifests
-cp demo-13-applicationsets/dev/manifests/deployment.yaml \
-   demo-13-applicationsets/hotfix/manifests/deployment.yaml
-# Edit namespace in the copied file: change demo13-dev → demo13-hotfix
+cd argo-cd-basics-to-prod/13-applicationset/src/gitops-apps-config
 
-git add demo-13-applicationsets/hotfix/
+mkdir -p demo-13-applicationset/hotfix/manifests
+cp demo-13-applicationset/dev/manifests/deployment.yaml \
+   demo-13-applicationset/hotfix/manifests/deployment.yaml
+
+git add demo-13-applicationset/hotfix/
 git commit -m "feat: add hotfix environment directory"
 git push origin main
-# ArgoCD detects new directory → creates demo13-hotfix Application automatically
-# No ApplicationSet YAML change needed
+# ArgoCD detects new directory → creates demo13-hotfix Application automatically in a different namespace=demo13-hotfix
 ```
+
+**Watch Applications appear:**
+```bash
+watch -n 2 'argocd app list'
+```
+
+**Expected:**
+```text
+NAME                     SYNC STATUS   HEALTH STATUS
+demo13-dev               Synced        Healthy
+demo13-staging           Synced        Healthy
+demo13-prod              Synced        Healthy
+demo13-us-east-ohio      Synced        Healthy
+demo13-middle-east-uae   Synced        Healthy
+demo13-hotfix            Synced        Healthy
+```
+
+**Verify Pods:**
+```bash
+kubectl get pods -n demo13-hotfix
+#Note: namespace changed, though using the same dev mainfest
+```
+
 
 **Clean up:**
 ```bash
 kubectl delete appset demo13-git-directory -n argocd
+
+#Confirm All Applications removed
+argocd app list
 ```
 
 ---
 
-## Step 7: Generator 4 — Git File Generator
+## Step 6: Generator 4 — Git File Generator
 
 ### What this step demonstrates
 
-We deploy to both clusters again, but this time the target definitions live in
-a `clusters.yaml` file inside the Git repository — not inline in the
-ApplicationSet YAML. Adding a new target requires only updating `clusters.yaml`
-and pushing. The ApplicationSet YAML itself never changes.
+We deploy to both clusters again, but target definitions live in a `clusters.yaml`
+file in the Git repository — not inline in the ApplicationSet YAML. Adding a
+new target requires only updating `clusters.yaml` and pushing. The ApplicationSet
+YAML itself never changes.
 
 ### About the Git File Generator
 
-The Git File generator reads structured YAML (or JSON) files from a Git
-repository. Each entry in the file provides the parameter set for one
-Application. The file is version-controlled independently of the ApplicationSet
-— different teams can own them separately.
-
-**Key fields:**
-```yaml
-generators:
-  - git:
-      repoURL: https://github.com/org/app-config.git
-      revision: HEAD
-      files:
-        - path: "path/to/clusters.yaml"   # one or more files to read
-```
+The Git File generator reads structured YAML (or JSON) files from a Git repository.
+Each entry in the file provides the parameter set for one Application. The file
+is version-controlled independently of the ApplicationSet.
 
 **How the file maps to variables:**
 Every key in each YAML entry becomes a template variable directly:
@@ -1429,21 +1374,11 @@ Every key in each YAML entry becomes a template variable directly:
 {{.namespace}}    → demo13-us-east-ohio-gf
 ```
 
-**Contrast with List generator:**
-The List generator embeds items directly in the ApplicationSet YAML — useful
-but couples generator configuration to the ApplicationSet definition. The Git
-File generator moves that configuration to a separate file — better for teams
-where the person authoring ApplicationSets is different from the person
-managing cluster targets.
+**When to use:** Complex parameter sets unwieldy in an ApplicationSet YAML;
+when a different team manages cluster targets and should not need to edit the
+ApplicationSet YAML; when targets have many fields (VPC IDs, account IDs, etc.).
 
-**When to use:**
-- Complex parameter sets that are unwieldy inside an ApplicationSet YAML
-- When generator configuration needs to be version-controlled separately
-- When a different team (e.g. platform team) manages cluster targets and should
-  not need to edit the ApplicationSet YAML itself
-- When targets have many fields (VPC IDs, region codes, account IDs, etc.)
-
-**The `clusters.yaml` file was already pushed in Step 2.** Its contents:
+**The `clusters.yaml` file was pushed in Step 1.** Its contents:
 ```yaml
 - name: us-east-ohio
   region: us-east-ohio
@@ -1455,7 +1390,12 @@ managing cluster targets.
   namespace: demo13-middle-east-uae-gf
 ```
 
-**Create `demo-13-applicationsets/04-git-file-generator.yaml`:**
+```bash
+cd argo-cd-basics-to-prod/13-applicationset/src/argocd-config
+touch demo-13-applicationset/04-git-file-generator.yaml
+```
+
+**Create `demo-13-applicationset/04-git-file-generator.yaml`:**
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -1469,11 +1409,10 @@ spec:
     - "missingkey=error"
   generators:
     - git:
-        repoURL: https://github.com/rselvantech/app-config.git
-        revision: HEAD
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        revision: main
         files:
-          - path: "demo-13-applicationsets/clusters.yaml"
-          # ArgoCD reads each entry in this file and runs the template once per entry
+          - path: "demo-13-applicationset/clusters.yaml"
   template:
     metadata:
       name: "demo13-gf-{{.name}}"
@@ -1481,9 +1420,9 @@ spec:
     spec:
       project: default
       source:
-        repoURL: https://github.com/rselvantech/app-config.git
-        targetRevision: HEAD
-        path: "demo-13-applicationsets/{{.region}}/manifests"
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        targetRevision: main
+        path: "demo-13-applicationset/{{.region}}/manifests"
       destination:
         name: "{{.clusterName}}"
         namespace: "{{.namespace}}"
@@ -1495,14 +1434,38 @@ spec:
           - CreateNamespace=true
 ```
 
+### Variable-to-Manifest Tracing: Git File Generator
+
+```
+clusters.yaml entry[0]:
+  name: "us-east-ohio"
+  region: "us-east-ohio"
+  clusterName: "in-cluster"
+  namespace: "demo13-us-east-ohio-gf"
+         │  template substitution
+         ▼
+Application CRD:
+  metadata.name: "demo13-gf-us-east-ohio"          ← {{.name}}
+  spec.source.path: ".../us-east-ohio/manifests"    ← {{.region}}
+  spec.destination.name: "in-cluster"               ← {{.clusterName}}
+  spec.destination.namespace: "demo13-us-east-ohio-gf" ← {{.namespace}}
+         │  ArgoCD syncs
+         ▼
+Manifests: us-east-ohio/manifests/ → deployed to in-cluster
+
+clusters.yaml entry[1]:
+  name: "middle-east-uae" → Application: demo13-gf-middle-east-uae
+  clusterName: "middle-east-uae" → deployed to middle-east-uae cluster
+```
+
 **Push and apply:**
 ```bash
-git add demo-13-applicationsets/04-git-file-generator.yaml
+git add demo-13-applicationset/04-git-file-generator.yaml
 git commit -m "feat: add demo-13 git file generator ApplicationSet"
 git push origin main
 
 kubectl config use-context us-east-ohio
-kubectl apply -f demo-13-applicationsets/04-git-file-generator.yaml
+kubectl apply -f demo-13-applicationset/04-git-file-generator.yaml
 ```
 
 **Verify Applications generated from file:**
@@ -1518,25 +1481,21 @@ demo13-gf-middle-east-uae  Synced        Healthy
 ```
 
 **Demonstrate Git-only addition — add a third region to `clusters.yaml`:**
+```bash
+cd argo-cd-basics-to-prod/13-applicationset/src/gitops-apps-config
+#update demo-13-applicationset/clusters.yaml
+```
 
-Edit `demo-13-applicationsets/clusters.yaml` to add a third entry:
+Add to `demo-13-applicationset/clusters.yaml`:
 ```yaml
-- name: us-east-ohio
-  region: us-east-ohio
-  clusterName: in-cluster
-  namespace: demo13-us-east-ohio-gf
-- name: middle-east-uae
-  region: middle-east-uae
-  clusterName: middle-east-uae
-  namespace: demo13-middle-east-uae-gf
 - name: eu-central
-  region: us-east-ohio          # reuse us-east-ohio manifests for demo
-  clusterName: in-cluster       # deploy to same cluster for local demo
+  region: us-east-ohio     # reuse manifests for demo
+  clusterName: in-cluster  # deploy to same cluster locally
   namespace: demo13-eu-central-gf
 ```
 
 ```bash
-git add demo-13-applicationsets/clusters.yaml
+git add demo-13-applicationset/clusters.yaml
 git commit -m "feat: add eu-central entry to clusters.yaml"
 git push origin main
 ```
@@ -1544,67 +1503,61 @@ git push origin main
 **Expected — third Application created with zero ApplicationSet YAML change:**
 ```bash
 argocd app list
-# NAME                        SYNC STATUS   HEALTH
-# demo13-gf-us-east-ohio      Synced        Healthy
-# demo13-gf-middle-east-uae   Synced        Healthy
-# demo13-gf-eu-central        Synced        Healthy  ← appeared from file change only
+# demo13-gf-eu-central  Synced  Healthy  ← appeared from file change only
+```
+
+**Verify Pods:**
+```bash
+#Check in us-east-ohio
+kubectl config use-context us-east-ohio
+kubectl get pods -n demo13-us-east-ohio-gf
+kubectl get pods -n demo13-eu-central-gf
+
+#Check in us-east-ohio
+kubectl config use-context middle-east-uae
+kubectl get pods -n demo13-middle-east-uae-gf
 ```
 
 **Clean up:**
 ```bash
 kubectl delete appset demo13-git-file -n argocd
+
+#Verify All Applications Remvoed
+argocd app list
 ```
 
 ---
 
-## Step 8: Generator 5 — Matrix Generator
+## Step 7: Generator 5 — Matrix Generator
 
 ### What this step demonstrates
 
 We deploy three environments (dev, staging, prod) to both clusters — producing
 six Applications from one ApplicationSet YAML. The Matrix generator combines
-the Git Directory generator (which discovers environments) with the List
-generator (which defines clusters). Every environment × every cluster = one
-Application per combination.
+the Git Directory generator (discovers environments) with the List generator
+(defines clusters). Every environment × every cluster = one Application.
 
 ### About the Matrix Generator
 
-The Matrix generator combines exactly two generators and produces one
-Application for every valid combination of their outputs. It is not a
-standalone generator — it wraps two other generators and multiplies their results.
+The Matrix generator combines exactly two generators and produces one Application
+for every valid combination of their outputs.
 
-**Key fields:**
-```yaml
-generators:
-  - matrix:
-      generators:
-        - <generator-type-1>:   # first generator — produces M items
-            ...
-        - <generator-type-2>:   # second generator — produces N items
-            ...
-        # Result: M × N Applications
-```
-
-**Template variables:**
-All variables from both inner generators are merged and available in the
-template simultaneously. If generator 1 exposes `{{.path.basename}}` and
-generator 2 exposes `{{.region}}`, both are available in the template without
-any special syntax.
-
-**Important rules:**
+**Key rules:**
 - Matrix wraps exactly two generators — no more, no less
 - Both generators must be self-sufficient — Matrix itself provides no variables
-- If the two generators expose variables with the same name, the second
-  generator's value wins (last-write wins)
-- Matrix can wrap any two generator types — including Cluster, Git Directory,
-  Git File, or another List
+- All variables from both generators are merged and available in the template
+- If both generators expose a variable with the same name, the second generator's
+  value wins
 
-**When to use:**
-- Every environment (dev/staging/prod) deployed to every cluster
-- Every microservice deployed to every environment
-- Any scenario where two independent dimensions both need to be fully covered
+**When to use:** Every environment deployed to every cluster; any two-dimensional
+deployment scenario.
 
-**Create `demo-13-applicationsets/05-matrix-generator.yaml`:**
+```bash
+cd argo-cd-basics-to-prod/13-applicationset/src/argocd-config
+touch demo-13-applicationset/05-matrix-generator.yaml
+```
+
+**Create `demo-13-applicationset/05-matrix-generator.yaml`:**
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -1621,12 +1574,12 @@ spec:
         generators:
           # Generator 1: discovers dev, staging, prod directories
           - git:
-              repoURL: https://github.com/rselvantech/app-config.git
-              revision: HEAD
+              repoURL: https://github.com/rselvantech/gitops-apps-config.git
+              revision: main
               directories:
-                - path: "demo-13-applicationsets/dev"
-                - path: "demo-13-applicationsets/staging"
-                - path: "demo-13-applicationsets/prod"
+                - path: "demo-13-applicationset/dev"
+                - path: "demo-13-applicationset/staging"
+                - path: "demo-13-applicationset/prod"
 
           # Generator 2: defines the two target clusters
           - list:
@@ -1638,22 +1591,22 @@ spec:
   template:
     metadata:
       name: "demo13-{{.path.basename}}-{{.region}}"
-      # Runs 6 times (3 directories × 2 clusters):
+      # 6 combinations (3 directories × 2 clusters):
       # demo13-dev-us-east-ohio, demo13-dev-middle-east-uae
       # demo13-staging-us-east-ohio, demo13-staging-middle-east-uae
       # demo13-prod-us-east-ohio, demo13-prod-middle-east-uae
     spec:
       project: default
       source:
-        repoURL: https://github.com/rselvantech/app-config.git
-        targetRevision: HEAD
-        path: "demo-13-applicationsets/{{.path.basename}}/manifests"
-        # uses {{.path.basename}} from Git Directory generator (dev/staging/prod)
+        repoURL: https://github.com/rselvantech/gitops-apps-config.git
+        targetRevision: main
+        path: "demo-13-applicationset/{{.path.basename}}/manifests"
+        # {{.path.basename}} from Git Directory generator (dev/staging/prod)
       destination:
         name: "{{.clusterName}}"
-        # uses {{.clusterName}} from List generator
+        # {{.clusterName}} from List generator
         namespace: "demo13-{{.path.basename}}-{{.region}}"
-        # combines both variables
+        # combines both generator variables
       syncPolicy:
         automated:
           prune: true
@@ -1662,7 +1615,43 @@ spec:
           - CreateNamespace=true
 ```
 
-> **What Matrix generates — 6 combinations:**
+### Variable-to-Manifest Tracing: Matrix Generator
+
+```
+Git Directory generator output:
+  [0] path.basename="dev",     path.path="demo-13-applicationset/dev"
+  [1] path.basename="staging", path.path="demo-13-applicationset/staging"
+  [2] path.basename="prod",    path.path="demo-13-applicationset/prod"
+
+List generator output:
+  [0] region="us-east-ohio",    clusterName="in-cluster"
+  [1] region="middle-east-uae", clusterName="middle-east-uae"
+
+Matrix combines: 3 × 2 = 6 combinations
+
+Combination [dev × us-east-ohio]:
+  Merged: path.basename="dev", region="us-east-ohio", clusterName="in-cluster"
+         │  template substitution
+         ▼
+  Application: demo13-dev-us-east-ohio
+    source.path: demo-13-applicationset/dev/manifests   ← {{.path.basename}}
+    destination.name: in-cluster                        ← {{.clusterName}}
+    destination.namespace: demo13-dev-us-east-ohio      ← {{.path.basename}}-{{.region}}
+         ▼
+  Manifests: dev/manifests → replicas=1, deployed to in-cluster
+
+Combination [prod × middle-east-uae]:
+  Merged: path.basename="prod", region="middle-east-uae", clusterName="middle-east-uae"
+         ▼
+  Application: demo13-prod-middle-east-uae
+    source.path: demo-13-applicationset/prod/manifests
+    destination.name: middle-east-uae
+    destination.namespace: demo13-prod-middle-east-uae
+         ▼
+  Manifests: prod/manifests → replicas=3, deployed to middle-east-uae cluster
+```
+
+> **All 6 combinations:**
 > ```
 > dev     × us-east-ohio    → demo13-dev-us-east-ohio      (in-cluster)
 > dev     × middle-east-uae → demo13-dev-middle-east-uae   (middle-east-uae)
@@ -1674,12 +1663,12 @@ spec:
 
 **Push and apply:**
 ```bash
-git add demo-13-applicationsets/05-matrix-generator.yaml
+git add demo-13-applicationset/05-matrix-generator.yaml
 git commit -m "feat: add demo-13 matrix generator ApplicationSet"
 git push origin main
 
 kubectl config use-context us-east-ohio
-kubectl apply -f demo-13-applicationsets/05-matrix-generator.yaml
+kubectl apply -f demo-13-applicationset/05-matrix-generator.yaml
 ```
 
 **Watch all six Applications appear:**
@@ -1687,76 +1676,99 @@ kubectl apply -f demo-13-applicationsets/05-matrix-generator.yaml
 watch -n 2 'argocd app list'
 ```
 
-**Expected — six Applications from one ApplicationSet:**
+**Expected:**
 ```text
-NAME                              SYNC STATUS   HEALTH STATUS
-demo13-dev-us-east-ohio           Synced        Healthy
-demo13-dev-middle-east-uae        Synced        Healthy
-demo13-staging-us-east-ohio       Synced        Healthy
-demo13-staging-middle-east-uae    Synced        Healthy
-demo13-prod-us-east-ohio          Synced        Healthy
-demo13-prod-middle-east-uae       Synced        Healthy
+NAME                              CLUSTER           SYNC STATUS   HEALTH STATUS
+demo13-dev-us-east-ohio           in-cluster        Synced        Healthy
+demo13-dev-middle-east-uae        middle-east-uae   Synced        Healthy
+demo13-staging-us-east-ohio       in-cluster        Synced        Healthy
+demo13-staging-middle-east-uae    middle-east-uae   Synced        Healthy
+demo13-prod-us-east-ohio          in-cluster        Synced        Healthy
+demo13-prod-middle-east-uae       middle-east-uae   Synced        Healthy
 ```
 
-**Verify correct replica counts across environments:**
+**Verify Pods:**
 ```bash
-kubectl get deployment demo13-app -n demo13-dev-us-east-ohio \
-  -o jsonpath='{.spec.replicas}'     # → 1
+#Check in us-east-ohio
+kubectl config use-context us-east-ohio
+kubectl get pods -n demo13-dev-us-east-ohio
+kubectl get pods -n demo13-staging-us-east-ohio
+kubectl get pods -n demo13-prod-us-east-ohio 
 
-kubectl get deployment demo13-app -n demo13-prod-us-east-ohio \
-  -o jsonpath='{.spec.replicas}'     # → 3
+#Check in us-east-ohio
+kubectl config use-context middle-east-uae
+kubectl get pods -n demo13-dev-middle-east-uae
+kubectl get pods -n demo13-staging-middle-east-uae
+kubectl get pods -n demo13-prod-middle-east-uae
 ```
 
 **Key observation — adding a new environment across both clusters:**
-Add a `hotfix` directory to `app-config`. The Git Directory sub-generator
+Add a `hotfix` directory to `gitops-apps-config`. The Git Directory sub-generator
 detects it. Matrix multiplies: `hotfix × us-east-ohio` and
 `hotfix × middle-east-uae` — two new Applications created automatically with
 zero ApplicationSet YAML change.
 
----
 
-## Verify Final State
-
+**Clean up:**
 ```bash
-# ApplicationSet
-kubectl get appset -n argocd
+kubectl config use-context us-east-ohio
+kubectl delete appset demo13-matrix -n argocd
 
-# All six Applications
+#Verify All Applications Remvoed
 argocd app list
-
-# All pods across all namespaces
-kubectl get pods -A | grep demo13
-
-# Verify replica count per environment
-kubectl get deployment demo13-app -n demo13-dev-us-east-ohio \
-  -o jsonpath='{.spec.replicas}'       # → 1
-kubectl get deployment demo13-app -n demo13-staging-us-east-ohio \
-  -o jsonpath='{.spec.replicas}'       # → 2
-kubectl get deployment demo13-app -n demo13-prod-us-east-ohio \
-  -o jsonpath='{.spec.replicas}'       # → 3
 ```
+
 
 ---
 
 ## Cleanup
 
 ```bash
-# Delete all ApplicationSets (cascades to generated Applications and resources)
-kubectl delete appset demo13-matrix -n argocd
+# check if any ApplicationSets exist 
+kubectl get appset  -n argocd
 
-# If any previous steps were not cleaned up:
-kubectl delete appset demo13-git-file -n argocd
-kubectl delete appset demo13-git-directory -n argocd
-kubectl delete appset demo13-cluster-generator -n argocd
-kubectl delete appset demo13-list-generator -n argocd
+
+# Delete AppSet, If any exist
+kubectl delete appset <Appset name> -n argocd
+
 
 # Verify all demo-13 Applications gone
 argocd app list
+```
+
+
+>**Why namespaces must be deleted manually:**
+> ArgoCD creates namespaces as infrastructure via `CreateNamespace=true` — they
+> are not part of the Git manifests and therefore not tracked as managed resources.
+> `prune: true` only removes resources that exist in Git and have been deleted from
+> it. Since the namespace was never in Git, it is never pruned. Delete namespaces
+> manually after removing Applications.
+>
+
+**Delete namespaces on us-east-ohio (in-cluster)**
+```bash
+kubectl config use-context us-east-ohio
+kubectl delete ns demo13-us-east-ohio demo13-middle-east-uae \
+   demo13-dev demo13-staging demo13-prod \
+   demo13-dev-us-east-ohio demo13-staging-us-east-ohio \
+   demo13-prod-us-east-ohio demo13-eu-central-gf demo13-us-east-ohio-gf
+```
+**Delete namespaces on middle-east-uae**
+```bash
+kubectl config use-context middle-east-uae
+kubectl delete ns demo13-middle-east-uae \
+   demo13-dev-middle-east-uae demo13-staging-middle-east-uae \
+   demo13-prod-middle-east-uae demo13-middle-east-uae-gf
+``` 
+
+
+```bash 
+kubectl config use-context us-east-ohio
 
 # Delete the second minikube profile
 minikube delete -p middle-east-uae
 
-# Rename the context back to 'minikube' (restores default profile name)
+# Rename the context back to 'minikube'
 kubectl config rename-context us-east-ohio minikube
 ```
 
@@ -1777,27 +1789,25 @@ CURRENT   NAME       CLUSTER    AUTHINFO
 
 **ApplicationSet = generators + template**
 Generators define how many Applications to create and for whom. Templates define
-what each Application looks like — identical to a standard Application CRD spec
-with generator variables injected via `{{.variableName}}`.
+what each Application looks like — identical to a standard Application CRD spec.
 
-**ApplicationSets do not deploy workloads — they create Applications**
-An ApplicationSet creates Application CRDs. Those Applications then deploy
-workloads. Troubleshoot in order: ApplicationSet → generated Applications →
-Kubernetes resources.
+**Manifests differ across region and environment folders intentionally**
+Each folder represents a distinct deployment target — different namespace,
+replica count, or configuration. This is the standard GitOps pattern. Demo-14
+(Kustomize) covers an alternative approach that reduces manifest repetition.
 
 **`goTemplate: true` with `missingkey=error` is the production default**
-Always enable Go templating for the dot-notation syntax required by nested
-variable access. Always set `missingkey=error` to fail loudly on undefined
-variables instead of silently creating Applications with empty fields.
+Always pair them. Go templating enables nested variable access. `missingkey=error`
+fails loudly on undefined variables instead of creating broken Applications.
 
-**Deleting an ApplicationSet cascades to all generated Applications**
-With `prune: true` in the template, this also deletes all Kubernetes resources.
-This cascade is correct and intentional.
+**Cluster generator requires Part 1 labels — applied before the ApplicationSet**
+The Cluster generator selects by label at sync time. Labels were set in
+`README-cluster-setup.md`. Applying the ApplicationSet before labelling generates
+zero Applications.
 
 **Matrix multiplies — it does not create intent**
-Matrix combines two generators. If generator 1 produces 3 items and generator
-2 produces 2 items, Matrix produces 6 Applications. Matrix contributes no
-variables of its own.
+Matrix combines two generators. 3 environments × 2 clusters = 6 Applications.
+Matrix contributes no variables of its own.
 
 **Generator selection guide:**
 
@@ -1818,40 +1828,26 @@ variables of its own.
 kubectl config get-contexts
 kubectl config use-context us-east-ohio
 kubectl config use-context middle-east-uae
-kubectl config rename-context minikube us-east-ohio
 kubectl config rename-context us-east-ohio minikube
 
-# Second minikube profile
-minikube start -p middle-east-uae --cpus 2 --memory 2048
-minikube delete -p middle-east-uae
-
-# Register cluster with labels
-argocd cluster add middle-east-uae \
-  --label app=demo13 \
-  --label region=middle-east-uae \
-  --name middle-east-uae
+# Cluster list
 argocd cluster list
-
-# Update existing cluster labels
-argocd cluster add <context> \
-  --label key=value \
-  --upsert
+kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster
 
 # ApplicationSet operations
 kubectl apply -f <appset.yaml>
 kubectl get appset -n argocd
-kubectl describe appset <name> -n argocd
-kubectl delete appset <name> -n argocd
+kubectl describe appset <n> -n argocd
+kubectl delete appset <n> -n argocd
 
 # Generated Applications
 argocd app list
 kubectl get apps -n argocd
-
-# Watch generation in real time
 watch -n 2 'argocd app list'
 
-# Inspect cluster secrets (used by Cluster generator)
-kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster
+# Check Docker network wiring (re-run after Docker/WSL2 restart)
+docker network connect middle-east-uae minikube
+docker exec minikube nc -zv -w 3 192.168.67.2 8443
 ```
 
 ---
@@ -1859,39 +1855,56 @@ kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=cluster
 ## Lessons Learned
 
 **1. ApplicationSets manage Applications — not workloads**
-If pods are not running after applying an ApplicationSet, check the generation
-chain: ApplicationSet status → generated Application sync status → Kubernetes
-resources. Each tier has its own troubleshooting starting point.
+Troubleshoot in order: ApplicationSet status → generated Application sync
+status → Kubernetes resources. Each tier has its own starting point.
 
 **2. Always use `goTemplate: true` and `missingkey=error`**
 Default string interpolation is fragile and limited. Go templating with
-`missingkey=error` fails loudly on undefined variables instead of silently
-creating broken Applications with empty fields.
+`missingkey=error` fails loudly on undefined variables.
 
-**3. Deleting an ApplicationSet cascades to Applications and resources**
+**3. Cluster labels from Part 1 are what the Cluster generator reads**
+The labels applied to clusters in `README-cluster-setup.md` are stored in
+cluster Secrets in the `argocd` namespace. The Cluster generator reads these
+Secrets at sync time. Labels must be set before the ApplicationSet is applied.
+
+**4. Deleting an ApplicationSet cascades to Applications and resources**
 With `prune: true` in the template, deleting the ApplicationSet removes all
-generated Applications and their Kubernetes resources. Manage at the
-ApplicationSet level — not individual Applications.
+generated Applications and their Kubernetes resources.
 
-**4. Matrix does not create intent — it multiplies existing intent**
+**5. Matrix does not create intent — it multiplies existing intent**
 Both inner generators must be self-sufficient. Matrix only multiplies their
 outputs. If a variable is missing from either generator, the template fails.
 
-**5. Cluster generator requires labels set before ApplicationSet is applied**
-The Cluster generator selects by label at sync time. Label your clusters first,
-then apply the ApplicationSet. Applying before labelling generates zero
-Applications.
-
 **6. Git Directory generator: exclude inner directories explicitly**
 If your structure is `env/manifests/deployment.yaml`, the generator discovers
-both `env` and `env/manifests`. Exclude `*/manifests` explicitly to prevent
-unintended Applications for subdirectories.
+both `env` and `env/manifests`. Exclude `*/manifests` explicitly.
 
-**7. Context switching is essential in multi-cluster work**
-Always verify which context is active before running `kubectl` commands.
-ArgoCD runs on `us-east-ohio` — all `kubectl apply` for ApplicationSets
-and all `argocd` CLI commands target this cluster. Pod verification for
-`middle-east-uae` requires explicitly switching context first.
+**7. Context switching is the most common error source in multi-cluster work**
+Always verify active context before any `kubectl` command. ArgoCD commands
+always target `us-east-ohio`. Pod verification for `middle-east-uae` requires
+explicitly switching context.
+
+**8. Docker network wiring must be re-run after Docker/WSL2 restart**
+The ArgoCD credential Secret persists. Only the network route needs
+re-establishing. See `README-cluster-setup.md` Step 3 for the commands.
+
+**9. Never hardcode `metadata.namespace` in ArgoCD-managed manifests**
+ArgoCD does not rewrite resource namespaces — `metadata.namespace` in a manifest
+always overrides `destination.namespace` in the Application CRD. For ApplicationSets
+this is critical: generator variables set `destination.namespace` dynamically per
+Application, but a hardcoded manifest namespace ignores that entirely and causes
+sync failures when the hardcoded namespace does not exist on the target cluster.
+Remove `namespace:` from all manifest metadata and let `destination.namespace`
+own it. `CreateNamespace=true` in `syncOptions` handles namespace creation.
+
+**10. ArgoCD never deletes namespaces — even with prune and selfHeal enabled**
+Namespaces are created as infrastructure via `CreateNamespace=true` and are not
+tracked as managed resources because they are not in the Git manifests. `prune: true`
+only removes resources that were in Git and have since been deleted — namespaces were
+never in Git so they are never pruned. This is also intentional safety behaviour:
+automatic namespace deletion would cascade-delete everything inside it, including
+resources ArgoCD did not create. Always delete namespaces manually after removing
+Applications or ApplicationSets.
 
 ---
 
@@ -1899,7 +1912,8 @@ and all `argocd` CLI commands target this cluster. Pod verification for
 
 **Demo-14: Kustomize with ArgoCD**
 Use Kustomize base and overlays with ArgoCD to manage environment-specific
-configuration without duplicating manifests. The natural next step after
+configuration without duplicating manifests. The natural complement to
 ApplicationSets — combine Kustomize overlays with a Git Directory or Matrix
 generator so each generated Application automatically applies its
-environment-specific overlay.
+environment-specific overlay. This directly addresses the "why do manifests
+look similar across folders" question from this demo.
