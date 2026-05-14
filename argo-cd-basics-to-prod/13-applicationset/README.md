@@ -1897,7 +1897,18 @@ sync failures when the hardcoded namespace does not exist on the target cluster.
 Remove `namespace:` from all manifest metadata and let `destination.namespace`
 own it. `CreateNamespace=true` in `syncOptions` handles namespace creation.
 
-**10. ArgoCD never deletes namespaces — even with prune and selfHeal enabled**
+**10. Git File generator: `clusters.yaml` namespace must align with manifest namespaces — or manifests must be namespace-free**
+The Git File generator sets `destination.namespace` from a field in `clusters.yaml`
+(e.g. `namespace: demo13-us-east-ohio-gf`). If the manifests also have
+`metadata.namespace` hardcoded to a different value (e.g. `demo13-us-east-ohio`),
+ArgoCD deploys into the manifest namespace — which does not exist on the target
+cluster — and the sync fails with `namespace "demo13-us-east-ohio" not found`.
+The fix is to remove `metadata.namespace` from all manifests and let
+`destination.namespace` from `clusters.yaml` own it entirely. This is what
+makes the `-gf` suffix namespaces in `clusters.yaml` actually work — once
+manifests have no hardcoded namespace, the generator variable is the sole authority.
+
+**11. ArgoCD never deletes namespaces — even with prune and selfHeal enabled**
 Namespaces are created as infrastructure via `CreateNamespace=true` and are not
 tracked as managed resources because they are not in the Git manifests. `prune: true`
 only removes resources that were in Git and have since been deleted — namespaces were

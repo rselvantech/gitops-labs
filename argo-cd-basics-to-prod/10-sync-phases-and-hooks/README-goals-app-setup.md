@@ -443,6 +443,197 @@ practice.
 
 ---
 
+###  Sealed Secrets — Complete Reference
+
+#### Introduction & History
+
+**Sealed Secrets** is an open-source Kubernetes controller and CLI tool created by
+**Bitnami** (now part of VMware/Broadcom). It was first released in **2017** as a
+solution to one of the most common GitOps problems: *how do you safely store
+Kubernetes Secrets in Git without exposing plaintext credentials?*
+
+The project became a CNCF-recognized tool and is widely adopted in production
+GitOps pipelines (ArgoCD, Flux, etc.). It remains actively maintained under the
+Bitnami Labs GitHub organisation.
+
+**Official Resources:**
+- GitHub: https://github.com/bitnami-labs/sealed-secrets
+- Helm Chart: https://bitnami-labs.github.io/sealed-secrets
+- Releases / Changelog: https://github.com/bitnami-labs/sealed-secrets/releases
+
+
+#### Components — Same Project, Same Provider
+
+`sealed-secrets-controller` and `kubeseal` are **both part of the same project**,
+maintained by the same team (Bitnami Labs), and released together from the same
+GitHub repository. They are two complementary halves of the same solution:
+
+| Component | What it is | Where it runs |
+|---|---|---|
+| `sealed-secrets-controller` | Kubernetes controller | Inside your cluster |
+| `kubeseal` | CLI tool | On your local machine / CI pipeline |
+
+
+#### How Sealed Secrets Works — Asymmetric Encryption
+
+Sealed Secrets uses asymmetric (public-key) encryption to allow secrets to be
+safely committed to Git.
+
+
+
+**1. Key Generation — How, When, and Where**
+
+**When:** The controller generates a fresh RSA key pair **automatically on first
+startup** after being installed into the cluster. By default, it also
+**rotates (generates a new key pair) every 30 days**, while retaining all old
+private keys so previously-sealed secrets continue to work.
+
+**How:** The key generation is performed entirely inside the controller process
+using standard RSA cryptography (2048-bit or 4096-bit RSA key pair).
+
+**Where the keys are stored:**
+
+```
+Private key  →  stored as a Kubernetes Secret in the `kube-system` namespace
+Public key   →  exposed via an in-cluster HTTPS endpoint served by the controller
+                (also embedded in the same Kubernetes Secret alongside the private key)
+```
+
+The Kubernetes Secret that holds the key pair looks like this (conceptually):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sealed-secrets-keyXXXXX   # random suffix per key rotation
+  namespace: kube-system
+  labels:
+    sealedsecrets.bitnami.com/sealed-secrets-key: active
+type: kubernetes.io/tls
+data:
+  tls.crt: <base64 encoded public key / certificate>   # public
+  tls.key: <base64 encoded private key>                # private — never leaves the cluster
+```
+
+---
+
+**2. Is Storing the Private Key as a Kubernetes Secret a Security Risk?**
+
+This is a valid and important question. The short answer is: **it is a deliberate
+trade-off, not an oversight**, and the design assumes your cluster's RBAC
+(Role-Based Access Control) is properly locked down.
+
+Key points:
+
+- The Secret is stored in `kube-system`, which should have **restricted RBAC** —
+  only cluster admins should be able to `get`/`list` secrets in that namespace.
+- An attacker who can read Secrets in `kube-system` already has full cluster
+  compromise — Sealed Secrets does not make this worse.
+- The protection Sealed Secrets provides is specifically for **Git repositories
+  and CI/CD pipelines** — it ensures the encrypted `SealedSecret` YAML files
+  sitting in Git cannot be decrypted without cluster access.
+- If you need stronger key protection (e.g., HSM or cloud KMS), consider
+  alternatives like **External Secrets Operator** (integrates with AWS Secrets
+  Manager, HashiCorp Vault, GCP Secret Manager, etc.).
+
+**Summary:** The private key stored as a Kubernetes Secret is protected by
+Kubernetes RBAC. It is a known, accepted design decision — not a security hole —
+provided your cluster access controls are properly configured.
+
+
+**3. How `kubeseal` Fetches the Public Key — and How It Knows Where to Look**
+
+When you run `kubeseal`, it needs the cluster's public key to encrypt the secret.
+It can obtain this in two ways:
+
+**Method A — Live fetch from the cluster (default):**
+
+```bash
+kubeseal < secret.yaml > sealedsecret.yaml
+```
+
+`kubeseal` uses your current **`kubectl` context** (i.e., `~/.kube/config`) to
+locate the cluster and calls the Sealed Secrets controller's in-cluster HTTPS
+endpoint:
+
+```
+GET https://<controller-service>.<namespace>.svc/v1/cert.pem
+```
+
+By default it looks for the controller service named `sealed-secrets-controller`
+in the `kube-system` namespace. You can override both:
+
+```bash
+kubeseal --controller-name my-controller \
+         --controller-namespace my-namespace \
+         < secret.yaml > sealedsecret.yaml
+```
+
+**Method B — Offline using a pre-fetched certificate file:**
+
+```bash
+# Step 1: fetch and save the public key once (requires cluster access)
+kubeseal --fetch-cert > mycert.pem
+
+# Step 2: use the saved cert file to seal — no cluster access needed
+kubeseal --cert mycert.pem < secret.yaml > sealedsecret.yaml
+```
+
+This is useful in CI pipelines where the pipeline agent may not have direct
+cluster access at seal-time.
+
+**4. The Full Encryption Flow**
+
+```
+kubeseal flow:
+  1. kubeseal reads your kubectl context to locate the cluster
+  2. Fetches the controller's public key via the in-cluster HTTPS endpoint
+     (or uses --cert file if provided)
+  3. Encrypts Secret data using hybrid encryption:
+       - Generates a random AES session key
+       - Encrypts the actual secret value with AES
+       - Encrypts the AES key with the RSA public key
+  4. Outputs SealedSecret YAML — safe to commit to Git
+
+Controller flow:
+  1. ArgoCD (or Flux) syncs SealedSecret YAML to cluster
+  2. Sealed Secrets controller detects the new/updated SealedSecret resource
+  3. Decrypts the AES session key using its RSA private key
+  4. Decrypts the secret value using the AES session key
+  5. Creates (or updates) a regular Kubernetes Secret with the decrypted values
+  6. Secret is now available to pods via normal Kubernetes Secret mounting
+```
+
+**5. Why It Is Safe Even If Git Is Compromised**
+
+The encrypted value in the `SealedSecret` requires the **private key** to decrypt.
+The private key **never leaves the cluster**. Even if an attacker has the full Git
+history and every `SealedSecret` YAML ever committed, they cannot recover the
+plaintext without access to the cluster's private key in `kube-system`.
+
+**6. Namespace Binding — A Critical Security Property**
+
+By default, a `SealedSecret` is **bound to a specific namespace and name**. The
+controller includes the namespace and name as part of the authenticated encryption
+context. A `SealedSecret` created for `demo15-dev` **cannot** be applied to
+`demo15-prod` and successfully decrypted — even if someone copies the file verbatim.
+This prevents cross-namespace secret escalation attacks.
+
+```bash
+# Sealed for demo15-dev — will NOT decrypt in demo15-prod
+kubeseal --namespace demo15-dev --name maintenance-secret ...
+```
+
+Scope options (via `--scope` flag):
+
+| Scope | Bound to namespace? | Bound to name? | Use case |
+|---|---|---|---|
+| `strict` (default) | Yes | Yes | Most secure, recommended |
+| `namespace-wide` | Yes | No | Reusable within a namespace |
+| `cluster-wide` | No | No | Portable, least restrictive |
+
+---
+
 ## Prerequisites
 
 - ✅ Completed Docker [Demo-14](https://github.com/rselvantech/docker/blob/main/docker-practical-guide-2025/14-goals-app-production/README.md) — both images in Docker Hub

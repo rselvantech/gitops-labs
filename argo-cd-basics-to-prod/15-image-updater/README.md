@@ -2,94 +2,112 @@
 
 ## Overview
 
-Every demo so far has used a fixed image tag — `rselvantech/podinfo:v1.0.0` pinned
-directly in the Deployment manifest. That works for learning. In production it creates
-a manual bottleneck: every time your CI pipeline builds and pushes a new image, someone
-must update the YAML file in the config repo, commit it, and push. At scale, this
-breaks the automation loop.
+Every demo so far has used a fixed image tag — `rselvantech/podinfo:v1.0.0`
+pinned in the Deployment manifest. In production, this creates a manual
+bottleneck. Every time a CI pipeline builds and pushes a new image, someone
+must open the config repo, edit the image tag in the YAML, commit, and push.
+At scale — multiple applications, multiple environments, multiple teams — this
+manual loop breaks down. Tags fall out of sync. Deployments lag behind builds.
+Human errors introduce stale or wrong tags.
 
-**ArgoCD Image Updater** closes this gap. It watches your container registry for new
-image tags, evaluates them against a strategy (latest, semver, digest), and writes the
-updated tag back to your Git config repo automatically. ArgoCD then picks up the change
-and deploys it — without anyone touching a YAML file.
+**ArgoCD Image Updater** closes this gap. It is a separate controller that
+watches your container registry for new image tags, evaluates them against an
+update strategy (semver, latest, digest), and writes the updated tag back to
+your Git config repo automatically. ArgoCD detects the Git change and deploys
+the new image — without anyone touching a YAML file.
 
-This demo isolates and demonstrates Image Updater as a standalone capability, using the
-same `podinfo` application from earlier demos with a second image version you push to
-Docker Hub.
+**The scenario in this demo:** Your team develops the `podinfo` status dashboard
+that was introduced in Demo-05. CI now builds and pushes new image versions to
+Docker Hub on every release. The platform team needs the dev environment to
+automatically track new patch versions (`v1.x.x`) as soon as they are pushed —
+while staging and prod use manual approval gates. We configure Image Updater
+to watch Docker Hub for new `podinfo` semver tags, write the updated tag back
+to the config repo, and let ArgoCD complete the deployment cycle — all without
+a human touching the manifests.
+
+**Why this demo combines Image Updater with Kustomize:**
+
+Demo-14 introduced Kustomize base + overlays as the production manifest pattern.
+Image Updater's Git write-back produces a file (`.argocd-source-<app>.yaml`)
+that uses Kustomize image override syntax. The two features are designed to work
+together — Image Updater writes the image tag, Kustomize applies it over the
+base manifest. This is how production teams use both features. Demonstrating
+Image Updater with raw manifests misses this integration and produces a
+write-back file format that would confuse students who have just learned Kustomize.
 
 **What you'll learn:**
 - Why automated image tag propagation is necessary in production GitOps
 - What ArgoCD Image Updater is and how it fits into the ArgoCD ecosystem
-- The difference between `argocd` write-back and `git` write-back strategies
-- The three update strategies: `semver`, `latest`, `digest`
-- How to configure Image Updater via Application CRD annotations
-- How credentials for private registries are provided to Image Updater
-- What the `.argocd-source-<app-name>.yaml` write-back file looks like
-- How to verify Image Updater is watching, detecting, and writing
+- The `argocd` vs `git` write-back strategies — why `git` is the only
+  true GitOps approach
+- The three update strategies: `semver`, `latest`, `digest` — when to use each
+- How to configure Image Updater entirely through Application CRD annotations
+- Why two separate credentials are needed — registry vs Git write-back
+- Why the `argocd-image-updater.argoproj.io/credentials: "true"` label
+  is mandatory on the registry secret
+- Why `targetRevision: main` (not `HEAD`) is required for git write-back
+  — and what happens silently when you use `HEAD`
+- What the `.argocd-source-<app>.yaml` write-back file contains and how
+  ArgoCD uses it with Kustomize
+- How Image Updater + Kustomize work together — the production pattern
 
 **What you'll do:**
 - Install ArgoCD Image Updater into the `argocd` namespace via Helm
+- Build the `podinfo` application using Kustomize base + overlays
+  (same pattern as Demo-14)
 - Push a second image version (`rselvantech/podinfo:v1.1.0`) to Docker Hub
-- Configure the `podinfo` application with Image Updater annotations
-- Observe Image Updater detect the new tag, update Git, and trigger a sync
-- Understand the full automated pipeline from image push to pod restart
+- Configure Image Updater annotations on the Application CRD
+- Observe Image Updater detect the new tag, commit the override file to Git,
+  and trigger an ArgoCD sync
+- Verify the full automated chain: registry push → Git commit → ArgoCD sync → pod update
+- Observe the write-back file format and understand how Kustomize consumes it
 
 ---
 
 ## Prerequisites
 
-- ✅ Completed Demo-05 — `podinfo-config` and `argocd-config` repos exist,
-  podinfo image `rselvantech/podinfo:v1.0.0` in Docker Hub
-- ✅ ArgoCD running on minikube (default profile)
+- ✅ Completed Demo-14 — Kustomize base + overlays pattern understood,
+  `gitops-apps-config` repo in use
+- ✅ ArgoCD running on minikube default profile
 - ✅ ArgoCD CLI installed and logged in
-- ✅ `kubectl` available in terminal
-- ✅ Docker CLI installed and authenticated (`docker login`)
-- ✅ GitHub PAT with `Contents: Read and write` access to `podinfo-config`
-  — Image Updater needs write access to commit the updated tag
-
-> **Why `Read and write` for the PAT?** Earlier demos only needed read access
-> because ArgoCD only reads your config repo. Image Updater is different — it
-> needs to write a commit back to `podinfo-config` when it detects a new image
-> tag. This is the one case where your config repo credential requires write
-> access.
+- ✅ `kubectl` and `kustomize` CLIs available
+- ✅ Docker CLI installed and authenticated (`docker login` as `rselvantech`)
+- ✅ GitHub PAT with `Contents: Read and write` access to `gitops-apps-config`
+  — Image Updater needs write access to commit the updated tag back to Git
 
 **Verify Prerequisites:**
 
-### 1. ArgoCD pods are running
+### 1. ArgoCD running
 ```bash
 kubectl get pods -n argocd
 ```
 
 **Expected:** All pods `Running` and `1/1` Ready.
 
-### 2. ArgoCD UI is accessible
+### 2. ArgoCD CLI logged in
 ```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-```
-
-Open `http://localhost:8080` — you should see the ArgoCD login page.
-
-### 3. ArgoCD CLI is installed and logged in
-```bash
-argocd version --client
 argocd login localhost:8080 --username admin --insecure
+argocd version --client
 ```
 
-**Expected:**
-```text
-argocd: v3.x.x
-'admin:login' logged in successfully
+**Expected:** Login successful, `argocd: v2.x.x`
+
+### 3. Repos registered
+```bash
+argocd repo list
 ```
 
-### 4. Docker Hub image exists and Docker is authenticated
+**Expected:** `gitops-apps-config` and `argocd-config` both showing `Successful`.
+
+### 4. Docker Hub image and authentication
 ```bash
 docker pull rselvantech/podinfo:v1.0.0
 docker info | grep Username
 ```
 
-**Expected:** Image pulled successfully. Docker is logged in as `rselvantech`.
+**Expected:** Image pulled successfully. Logged in as `rselvantech`.
 
-If not logged in:
+**If not logged in:**
 ```bash
 docker login --username rselvantech
 ```
@@ -98,279 +116,364 @@ docker login --username rselvantech
 
 ## Concepts
 
+### The Demo Scenario — podinfo Continuous Delivery
+
+`podinfo` is a lightweight Go web application from Stefan Prodan used throughout
+this course as a reference application. It has a colour-coded web UI, version
+information on the home page, and a `/version` JSON endpoint — making it easy to
+visually confirm which image version is running without inspecting manifests.
+
+Your team follows trunk-based development. Every time a new version is ready,
+CI builds `rselvantech/podinfo:vX.Y.Z` and pushes it to Docker Hub. Before
+Image Updater, the workflow looked like this:
+
+```
+CI pushes rselvantech/podinfo:v1.1.0 to Docker Hub
+         │
+         │  Manual step — someone must do this:
+         ▼
+Developer opens gitops-apps-config/demo-15.../overlays/dev/kustomization.yaml
+Updates: images:
+           - name: rselvantech/podinfo
+             newTag: v1.1.0
+Commits and pushes to main
+         │
+         ▼
+ArgoCD detects change → syncs → pod updated
+```
+
+The manual middle step is the problem. It delays deployment, requires human
+attention for every release, and breaks if the person responsible is unavailable.
+
+**With Image Updater:**
+
+```
+CI pushes rselvantech/podinfo:v1.1.0 to Docker Hub
+         │
+         │  Image Updater polls registry every 2 minutes
+         ▼
+Image Updater: v1.1.0 > v1.0.0 (semver) → update required
+         │
+         │  Image Updater commits to gitops-apps-config
+         ▼
+.argocd-source-podinfo-image-updater-demo.yaml written to Git:
+  kustomize:
+    images:
+    - rselvantech/podinfo:v1.1.0
+         │
+         ▼
+ArgoCD detects Git commit → syncs → pod updated with v1.1.0
+```
+
+No human involvement. No YAML editing. The full cycle from image push to running
+pod is automated.
+
+---
+
 ### The Missing Link in Static GitOps
 
-Traditional GitOps manages infrastructure and application configuration via Git.
-But it has a blind spot — the image tag in your Deployment manifest is just a
-string. Nothing automatically updates it when your CI pipeline builds a new version.
+Traditional GitOps has a blind spot: the image tag in your config repo is a
+string. Nothing connects it to what your CI pipeline builds and pushes. The
+config repo and the registry are two separate systems with no automated bridge.
 
-The typical manual workflow:
 ```
-CI builds rselvantech/podinfo:v1.1.0
-  → pushes to Docker Hub
-  → CI engineer updates deployment.yaml
-  → commits and pushes to podinfo-config
-  → ArgoCD detects the change and syncs
-  → pod restarts with new image
+CI system               Config Repo              Cluster
+────────────            ───────────────          ──────────────────
+build v1.1.0  ──push──▶ Docker Hub    ◄──read──  ArgoCD syncs
+push v1.1.0                │                     whatever is in
+                           │                     config repo
+                    config repo still
+                    says v1.0.0        ← gap
 ```
 
-The problem is the middle three steps. They are manual, error-prone, and slow.
-Teams add custom CI scripts to do this update — which means every team reinvents
-the same wheel and every implementation differs.
-
-ArgoCD Image Updater is the standard solution to this problem.
+Image Updater is that bridge — the automated connection between what the registry
+contains and what the config repo declares.
 
 ---
 
 ### What ArgoCD Image Updater Is
 
-ArgoCD Image Updater is a separate controller that runs alongside ArgoCD. It
-periodically polls container registries for new image tags, compares them against
-a configured update strategy, and writes updated tags back to Git automatically.
+Image Updater is a separate Kubernetes controller that runs in the `argocd`
+namespace alongside ArgoCD. It is not part of ArgoCD core — it is an optional
+add-on. It does two things:
+
+1. **Polls the registry** — queries Docker Hub (or any OCI-compatible registry)
+   for the list of tags on a watched image. Applies the configured strategy to
+   determine if a newer tag is available.
+
+2. **Writes back** — if a newer tag is found, writes the updated tag either
+   directly to the ArgoCD Application object (fast, not GitOps) or commits a
+   small override file to the Git config repo (slower, fully GitOps).
 
 ```
-Container Registry (Docker Hub)
-        │
-        │ Image Updater polls every N seconds
-        │ Detects: rselvantech/podinfo:v1.1.0
-        ▼
-ArgoCD Image Updater
-        │ Update strategy: semver — v1.1.0 > v1.0.0 ✅
-        │ Write-back method: git
-        ▼
-podinfo-config (GitHub)
-        │ Commits: .argocd-source-podinfo.yaml
-        │ tag: "v1.1.0"
-        ▼
-ArgoCD Application Controller
-        │ Detects diff — deployment uses v1.0.0, Git now says v1.1.0
-        ▼
-Kubernetes Cluster
-        │ Deployment rolls out with rselvantech/podinfo:v1.1.0
-        ▼
-Pod running v1.1.0
+┌──────────────────────────────────────────────────────────────────────┐
+│  Kubernetes Cluster (minikube)                                       │
+│                                                                      │
+│  namespace: argocd                                                   │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │                                                              │    │
+│  │  ArgoCD Application Controller ◄──── gitops-apps-config     │    │
+│  │  (watches Git, syncs cluster)         (GitHub)              │    │
+│  │                                            ▲                │    │
+│  │  ArgoCD Image Updater ─────────────────────┘                │    │
+│  │  (polls registry, writes Git)  commits .argocd-source-*     │    │
+│  │           │                                                  │    │
+│  └───────────┼──────────────────────────────────────────────────┘    │
+│              │ polls every 2 minutes                                 │
+└──────────────┼───────────────────────────────────────────────────────┘
+               ▼
+       Docker Hub Registry
+       rselvantech/podinfo:v1.0.0  ← current
+       rselvantech/podinfo:v1.1.0  ← detected → triggers write-back
 ```
-
-This is the full automation loop. No manual YAML editing. No CI scripts.
-No human intervention after the image is pushed.
 
 ---
 
 ### Write-Back Strategies — `argocd` vs `git`
 
-Image Updater supports two methods for persisting the updated image tag:
+**`argocd` write-back — fast but not GitOps:**
+Updates the Application object in the cluster directly. Git is never touched.
+If the Application is deleted and recreated, the override is lost — the
+Deployment returns to whatever tag the manifest declares.
 
-**`argocd` (direct write-back):**
-Image Updater updates the Application object directly in Kubernetes, overriding
-the image tag at runtime. The Git repo is never touched. The override lives
-in the Application's `status` field.
-
-```
-Pros:  Fast — no Git commit delay
-Cons:  The change is not in Git — if the Application is deleted and recreated,
-       the override is lost. Not truly GitOps.
-```
-
-**`git` (write-back to repo) — recommended:**
-Image Updater commits a small override file (`.argocd-source-<app-name>.yaml`)
-to your config repo. ArgoCD detects this commit and syncs the deployment with
-the new tag.
+**`git` write-back — the correct GitOps approach:**
+Commits a `.argocd-source-<app-name>.yaml` file to the config repo. ArgoCD
+detects this commit and syncs. The tag change is in Git history — auditable,
+recoverable, version-controlled.
 
 ```
-Pros:  Fully GitOps — the new tag is in Git, auditable, recoverable
-Cons:  Slightly slower — requires a Git commit → ArgoCD poll cycle
+git write-back produces this commit in gitops-apps-config:
+
+.argocd-source-podinfo-image-updater-demo.yaml:
+  kustomize:
+    images:
+    - rselvantech/podinfo:v1.1.0
+
+ArgoCD merges this with the Application source → overrides the base image tag
+Kustomize sees: image override for rselvantech/podinfo → uses v1.1.0
 ```
 
-> **This demo uses `git` write-back.** It is the production-aligned approach —
-> the updated tag exists in Git history and is recoverable. The `argocd` method
-> is convenient for experimentation but is not durable.
+**This demo uses `git` write-back exclusively.** The `argocd` method is useful
+for experimentation but is not durable and is not covered here.
 
 ---
 
 ### Update Strategies
 
-Image Updater supports three strategies for deciding which new tag to use:
-
-**`semver` — semantic version ordering:**
-Only updates to a newer version according to semver rules. `v1.1.0` is newer
-than `v1.0.0`. `v2.0.0-beta` is not newer than `v1.9.9` (pre-release constraint).
+**`semver` — semantic version ordering (used in this demo):**
+Only updates to a newer version by semver rules. `v1.1.0 > v1.0.0` → update.
+`v2.0.0-beta` is a pre-release — not newer than `v1.9.9` by semver rules.
 
 ```yaml
-# Accepts any new semver-compatible tag
-argocd-image-updater.argoproj.io/image-list: podinfo=rselvantech/podinfo
 argocd-image-updater.argoproj.io/podinfo.update-strategy: semver
 ```
 
-Best for: applications that use proper semantic versioning. Most production cases.
+Best for: applications with proper semantic versioning. Most production cases.
 
 **`latest` — newest by push date:**
-Always uses the most recently pushed tag. No version ordering — just whichever
-tag was pushed most recently to the registry.
+Uses the most recently pushed tag regardless of version ordering. If `v1.0.0`
+was pushed after `v1.1.0`, it would be selected.
 
 ```yaml
 argocd-image-updater.argoproj.io/podinfo.update-strategy: latest
 ```
 
-Best for: `latest` or rolling tags where no semantic version exists.
+Best for: rolling tags with no semantic version (`main`, `edge`).
 
-**`digest` — image digest tracking:**
-Tracks the digest (`sha256:...`) of a specific tag. When the same tag (e.g.
-`latest`) is overwritten with a new image, the digest changes — Image Updater
-detects this and updates.
+**`digest` — image content tracking:**
+Tracks the SHA256 digest of a tag. When the same tag name is overwritten with
+a new image (common with `latest`), the digest changes — Image Updater detects
+this and updates.
 
 ```yaml
 argocd-image-updater.argoproj.io/podinfo.update-strategy: digest
 ```
 
-Best for: mutable tags like `main` or `latest` where the tag never changes but
-the image content does.
-
-> **In this demo:** We use `semver`. We push `v1.1.0` to Docker Hub and Image
-> Updater detects it as newer than the current `v1.0.0`.
+Best for: mutable tags like `latest` where the tag name never changes.
 
 ---
 
-### The Write-Back File — What Git Receives
+### The `allow-tags` Constraint — Why It Matters
 
-When Image Updater uses `git` write-back, it commits a file named
-`.argocd-source-<application-name>.yaml` to the root of your config repo
-on the tracked branch (`main`).
-
-For the `podinfo` application, the file looks like:
+Without `allow-tags`, Image Updater considers every tag on the image. For
+`rselvantech/podinfo`, this includes tags like `latest`, `main`, `sha-abc123`
+alongside `v1.0.0` and `v1.1.0`. With `semver` strategy, non-semver tags like
+`latest` are ignored — but this is implicit behaviour. Making the constraint
+explicit is safer and self-documenting:
 
 ```yaml
-# .argocd-source-podinfo.yaml
+argocd-image-updater.argoproj.io/podinfo.allow-tags: regexp:^v1\.\d+\.\d+$
+```
+
+This constraint says: only consider tags matching `v1.x.x` where x is a number.
+`v1.0.0` ✅, `v1.1.0` ✅, `v2.0.0` ✗ (major version bump — not in range),
+`latest` ✗, `main` ✗.
+
+**Why constrain to `v1.x.x` specifically:** In the demo scenario, dev tracks
+patch and minor versions automatically. A major version bump (`v2.0.0`) requires
+deliberate human review — it should not auto-deploy even in dev. The regexp
+implements this policy declaratively in the Application annotation.
+
+---
+
+### Why `targetRevision: main` Is Required — The Silent Failure Mode
+
+Image Updater's `git` write-back commits to a **branch reference** (`main`).
+ArgoCD must be configured to track the same branch for it to detect the commit.
+
+If `targetRevision: HEAD` is used:
+
+```
+ArgoCD resolves HEAD → commits to a SHA (e.g. abc123) at Application creation time
+Image Updater commits .argocd-source-*.yaml to main branch
+main branch tip is now commit def456
+
+ArgoCD is still tracking SHA abc123 → never sees def456
+Image Updater's commits are silently ignored
+The pod is never updated
+No error message
+```
+
+This is a silent failure — the logs show Image Updater committing successfully,
+ArgoCD reports Synced, but the image never updates. The fix is always
+`targetRevision: main` — an explicit branch name, never `HEAD`.
+
+**Course rule:** `targetRevision: main` from Demo-10 onwards — consistent with
+this requirement and with Git File/Directory generators in Demo-13.
+
+---
+
+### Two Separate Credentials — Why Each Is Needed
+
+Image Updater requires two completely independent credentials for two different
+operations:
+
+| Credential | What it authenticates to | What it does | Where it lives |
+|---|---|---|---|
+| Registry secret | Docker Hub API | Lists available tags, reads digests | Kubernetes Secret in `argocd` namespace, with mandatory label |
+| Git credential | GitHub | Commits `.argocd-source-*.yaml` to config repo | ArgoCD repo credential (`argocd repo add`) |
+
+**The registry secret is NOT the same as the image pull secret:**
+
+```
+Image pull secret (kubelet):
+  kubernetes.io/dockerconfigjson type
+  Lives in the application namespace (e.g. demo15-image-updater)
+  Used by kubelet to pull the container image when starting a pod
+  Scoped to a namespace
+
+Image Updater registry secret (API polling):
+  Opaque type
+  Lives in argocd namespace
+  Used by Image Updater to call Docker Hub API: GET /v2/rselvantech/podinfo/tags/list
+  Requires argocd-image-updater.argoproj.io/credentials: "true" label — mandatory
+  Without this label the secret is completely ignored by Image Updater
+```
+
+**The mandatory label — the most common setup error:**
+
+```yaml
+metadata:
+  labels:
+    argocd-image-updater.argoproj.io/credentials: "true"  ← MANDATORY
+```
+
+Image Updater scans all Secrets in the `argocd` namespace and only uses those
+with this exact label. A secret without the label is invisible to Image Updater
+regardless of its name or content. Always verify the label is present.
+
+---
+
+### Image Updater + Kustomize — How the Write-Back File Works
+
+When Image Updater uses `git` write-back with a Kustomize application, it
+commits a file that uses Kustomize image override syntax:
+
+```yaml
+# .argocd-source-podinfo-image-updater-demo.yaml
 # Auto-generated by ArgoCD Image Updater — do not edit manually
 kustomize:
   images:
   - rselvantech/podinfo:v1.1.0
 ```
 
-ArgoCD reads this file and merges it with the Application's source configuration —
-overriding the image tag in the Deployment without touching `deployment.yaml` directly.
-This is a deliberate design: Image Updater touches only this one file. Your
-actual manifests remain unchanged.
+ArgoCD reads this file and merges it with the Application's Kustomize source —
+overriding the image tag without touching any overlay `kustomization.yaml` or
+base manifest. The override is applied on top of whatever Kustomize builds from
+the overlay, then the combined output is applied to the cluster.
 
-> **Important:** The Application must track a branch (`main`) — not `HEAD`.
-> Image Updater commits to a branch reference. If `targetRevision: HEAD` is
-> used (which resolves to the default branch tip), commits from Image Updater
-> are not detected reliably. Always set `targetRevision: main` when using
-> Image Updater.
+```
+kustomize build overlays/dev/
+  → Deployment: image: rselvantech/podinfo:v1.0.0  ← from base manifest
+
+ArgoCD merges .argocd-source-podinfo-image-updater-demo.yaml override:
+  image override: rselvantech/podinfo:v1.1.0
+
+Final manifest applied to cluster:
+  → Deployment: image: rselvantech/podinfo:v1.1.0  ← override wins
+```
+
+This is the production pattern: Image Updater touches only the write-back file.
+Base manifests and overlay `kustomization.yaml` files remain unchanged.
+The override file is the audit trail of what Image Updater did and when.
 
 ---
 
-### Credential Scopes
-
-Image Updater needs two separate credentials:
-
-| Credential | Purpose | Where configured |
-|---|---|---|
-| **Docker Hub** (or registry) | Pull image metadata — list tags, read digests | Kubernetes Secret in `argocd` namespace |
-| **GitHub PAT** | Write the `.argocd-source-*.yaml` commit to config repo | ArgoCD repository credential (`argocd repo add`) |
-
-These are independent. Image Updater authenticates to the registry to read tag
-information and to Git to write the override file.
-
-**Registry credential secret format:**
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: image-updater-dockerhub
-  namespace: argocd
-  labels:
-    argocd-image-updater.argoproj.io/credentials: "true"  # ← mandatory label
-type: Opaque
-stringData:
-  credentials: "rselvantech:<DOCKERHUB_TOKEN>"
-```
-
-The `credentials` label tells Image Updater to use this secret when authenticating
-with Docker Hub. Without the label, the secret is ignored.
-
----
-
-### Architecture: Where Image Updater Lives
+## Folder Structure
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Kubernetes Cluster (minikube)                                   │
-│                                                                  │
-│  namespace: argocd                                               │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                                                            │  │
-│  │  ArgoCD Application Controller  ◄─────── podinfo-config   │  │
-│  │  (watches Git, syncs cluster)           (GitHub)          │  │
-│  │                                              ▲            │  │
-│  │  ArgoCD Image Updater           ─ ─ ─ ─ ─ ─ ┘            │  │
-│  │  (polls registry, writes Git)   commits .argocd-source-*  │  │
-│  │           │                                                │  │
-│  └───────────┼────────────────────────────────────────────────┘  │
-│              │                                                   │
-└──────────────┼───────────────────────────────────────────────────┘
-               │ polls for new tags
-               ▼
-       Docker Hub Registry
-       rselvantech/podinfo:v1.0.0  ← current
-       rselvantech/podinfo:v1.1.0  ← new — detected by Image Updater
+15-image-updater/
+└── src/
+    ├── gitops-apps-config/
+    │   └── demo-15-image-updater/
+    │       ├── base/
+    │       │   ├── kustomization.yaml     ← lists resources, no namespace
+    │       │   ├── deployment.yaml        ← image: rselvantech/podinfo:v1.0.0
+    │       │   └── service.yaml
+    │       └── overlays/
+    │           └── dev/
+    │               ├── kustomization.yaml ← namespace: demo15-image-updater, replicas: 1
+    │               └── env-patch.yaml
+    │   # After Image Updater runs — auto-committed by Image Updater:
+    │   # .argocd-source-podinfo-image-updater-demo.yaml
+    └── argocd-config/
+        └── demo-15-image-updater/
+            └── podinfo-image-updater-app.yaml  ← Application with Image Updater annotations
 ```
 
-Both ArgoCD and Image Updater run in the same `argocd` namespace. Image Updater
-is installed separately from ArgoCD core — it is an optional add-on.
+> **Why `gitops-apps-config` instead of `podinfo-config`:**
+> From Demo-10 onwards, all application manifests live in `gitops-apps-config`
+> — a single repo for all demo manifests, already registered with ArgoCD.
+> The original Demo-15 used `podinfo-config` for historical reasons. This
+> updated version aligns with the course convention.
 
----
-
-## Directory Structure
-
-```
-15-image-updater/src/
-├── podinfo-config/              ← git init → remote: rselvantech/podinfo-config
-│   └── demo-15-image-updater/
-│       ├── deployment.yaml      ← uses v1.0.0 initially
-│       └── service.yaml
-└── argocd-config/               ← git init → remote: rselvantech/argocd-config
-    └── demo-15-image-updater/
-        └── podinfo-image-updater-app.yaml
-```
-
-**What happens in GitHub after all pushes:**
-
-```
-rselvantech/podinfo-config (GitHub)
-├── deployment.yaml              ← Demo-05 root (untouched)
-├── demo-06-sync-pruning/        ← Demo-06 (untouched)
-├── demo-09-argocd-projects/     ← Demo-09 (untouched)
-└── demo-15-image-updater/       ← This demo adds this
-    ├── deployment.yaml
-    └── service.yaml
-    # After Image Updater runs:
-    └── .argocd-source-podinfo-image-updater-demo.yaml  ← auto-committed by Image Updater
-
-rselvantech/argocd-config (GitHub)
-├── podinfo-app.yaml             ← Demo-05 (untouched)
-├── demo-06-sync-pruning/        ← Demo-06 (untouched)
-├── demo-09-argocd-projects/     ← Demo-09 (untouched)
-├── demo-10-sync-hooks/          ← Demo-10 (untouched)
-├── demo-11-sync-waves/          ← Demo-11 (untouched)
-└── demo-15-image-updater/       ← This demo adds this
-    └── podinfo-image-updater-app.yaml
-```
-
-> Only `podinfo-config` needs to be registered with ArgoCD — it is the source
-> ArgoCD and Image Updater both interact with. `argocd-config` is applied once
-> with `kubectl apply` and does not need ArgoCD registration.
+> **Why only one overlay (dev):**
+> Image Updater auto-deployment is appropriate for dev environments. Staging
+> and prod typically use manual approval gates or tag constraints that limit
+> auto-updates. Demonstrating one overlay keeps the focus on Image Updater
+> mechanics without complicating the demo with multi-environment sync management.
 
 ---
 
 ## Step 1: Install ArgoCD Image Updater
 
-Image Updater is a separate Helm chart. Install it into the same `argocd` namespace
-as ArgoCD.
+Image Updater is a separate Helm chart installed into the same `argocd`
+namespace as ArgoCD. It runs as an additional controller pod and communicates
+with ArgoCD via its in-cluster API server address.
 
-**Add the Image Updater Helm repo:**
 ```bash
 helm repo add argocd-image-updater https://argoproj.github.io/argocd-image-updater
 helm repo update
+```
+
+**Verify the repo was added:**
+```bash
+helm repo list | grep image-updater
+```
+
+**Expected:**
+```text
+argocd-image-updater   https://argoproj.github.io/argocd-image-updater
 ```
 
 **Install Image Updater:**
@@ -381,14 +484,16 @@ helm install argocd-image-updater argocd-image-updater/argocd-image-updater \
   --set config.argocd.serverAddress=argocd-server.argocd.svc.cluster.local
 ```
 
-> **`config.argocd.insecure=true`** — required because our ArgoCD server uses
-> a self-signed certificate. In production with a valid TLS certificate, omit this.
+> **`config.argocd.insecure=true`** — our ArgoCD server uses a self-signed
+> TLS certificate. This flag tells Image Updater to skip certificate verification
+> when communicating with the ArgoCD API. In production with a valid TLS
+> certificate signed by a trusted CA, omit this flag.
 >
-> **`config.argocd.serverAddress`** — the in-cluster service address for ArgoCD.
-> Image Updater communicates with ArgoCD via its API to retrieve Application
-> definitions and trigger sync.
+> **`config.argocd.serverAddress`** — the in-cluster DNS name for the ArgoCD
+> server Service. Image Updater calls the ArgoCD API to discover which
+> Applications have Image Updater annotations configured.
 
-**Verify Image Updater is running:**
+**Verify Image Updater pod is running:**
 ```bash
 kubectl get pods -n argocd | grep image-updater
 ```
@@ -398,9 +503,10 @@ kubectl get pods -n argocd | grep image-updater
 argocd-image-updater-xxxxxxxxx-xxxxx   1/1   Running   0   30s
 ```
 
-**Check Image Updater logs to confirm it started successfully:**
+**Verify startup in logs:**
 ```bash
-kubectl logs -l app.kubernetes.io/name=argocd-image-updater -n argocd --tail=20
+kubectl logs -l app.kubernetes.io/name=argocd-image-updater \
+  -n argocd --tail=20
 ```
 
 **Expected:**
@@ -414,137 +520,146 @@ time="..." level=info msg="Starting metrics server"
 
 ## Step 2: Push a New Image Version to Docker Hub
 
-We need a second image version for Image Updater to detect. We build `v1.1.0` from
-the same podinfo image with a different environment variable — no source code changes
-needed.
+We need a second image version for Image Updater to detect. We re-tag
+`v1.0.0` as `v1.1.0` — no source code change needed. In production your CI
+pipeline builds a genuinely different image; the Image Updater mechanism is
+identical.
 
-**Build and tag `v1.1.0`:**
 ```bash
-# Pull v1.0.0 as the base (we already have this from Demo-05)
 docker pull rselvantech/podinfo:v1.0.0
-
-# Re-tag as v1.1.0
-docker tag rselvantech/podinfo:v1.0.0 rselvantech/podinfo:v1.1.0
-
-# Push v1.1.0 to Docker Hub
+docker tag  rselvantech/podinfo:v1.0.0 rselvantech/podinfo:v1.1.0
 docker push rselvantech/podinfo:v1.1.0
 ```
 
-**Verify both tags exist on Docker Hub:**
+**Verify:**
 ```bash
 docker pull rselvantech/podinfo:v1.1.0
 ```
 
-**Expected:** `Already exists` or pulled successfully.
+**Expected:** `Already exists` or downloaded successfully.
 
-**Verify on Docker Hub UI:**
-Go to `hub.docker.com/r/rselvantech/podinfo/tags` — you should see both
-`v1.0.0` and `v1.1.0` listed.
+**Verify both tags visible on Docker Hub:**
 
-> **Why re-tag instead of building a truly different image?** For this demo the
-> goal is to show Image Updater detecting a new tag — not to demonstrate a
-> different application version. In production, your CI pipeline builds a
-> genuinely different image from new source code and pushes it with the new tag.
-> The Image Updater mechanism is identical either way.
+Open `hub.docker.com/r/rselvantech/podinfo/tags` — both `v1.0.0` and `v1.1.0`
+must be listed. Image Updater queries this tag list on its polling cycle.
 
 ---
 
 ## Step 3: Configure Registry Credentials for Image Updater
 
-Image Updater needs credentials to query Docker Hub for image tags. Create a
-Kubernetes Secret in the `argocd` namespace with the mandatory label.
+Image Updater needs credentials to call the Docker Hub API and list available
+tags. This is separate from the image pull secret used by the kubelet — they
+solve different problems at different layers.
 
+**Create the registry credential secret:**
 ```bash
 kubectl create secret generic image-updater-dockerhub \
   --namespace argocd \
   --from-literal=credentials="rselvantech:<DOCKERHUB_TOKEN>"
 ```
 
-**Apply the mandatory label** — without this label Image Updater ignores the secret:
+**Apply the mandatory label — without this, Image Updater completely ignores the secret:**
 ```bash
 kubectl label secret image-updater-dockerhub \
-  -n argocd \
+  --namespace argocd \
   argocd-image-updater.argoproj.io/credentials="true"
 ```
 
-**Verify the secret and label:**
+**Verify both the secret and the label:**
 ```bash
-kubectl get secret image-updater-dockerhub -n argocd \
-  --show-labels
+kubectl get secret image-updater-dockerhub -n argocd --show-labels
 ```
 
 **Expected:**
 ```text
-NAME                      TYPE     DATA   AGE   LABELS
-image-updater-dockerhub   Opaque   1      10s   argocd-image-updater.argoproj.io/credentials=true
+NAME                      TYPE     DATA   LABELS
+image-updater-dockerhub   Opaque   1      argocd-image-updater.argoproj.io/credentials=true
 ```
 
-> **Why a separate secret from the existing `dockerhub-secret` in the `podinfo`
-> namespace?** The existing pull secret is namespace-scoped and used by the
-> kubelet to pull images. Image Updater's credential secret is a different
-> concern — it lives in the `argocd` namespace and is used to query the
-> registry API (tag listing), not to pull images. They solve different problems
-> at different layers and must be created separately.
+> **Why `Opaque` type, not `kubernetes.io/dockerconfigjson`:**
+> Image Updater's registry credential is for API access (tag listing via
+> Docker Hub HTTP API), not for image pulling. It uses a simple
+> `username:password` format stored in an Opaque secret. The kubelet pull
+> secret (dockerconfigjson) is used separately by Kubernetes when pulling
+> images into the node. These are two independent credential systems.
 
 ---
 
 ## Step 4: Configure Git Write-Back Credentials
 
-Image Updater needs write access to `podinfo-config` to commit the
-`.argocd-source-*.yaml` override file. This uses the same ArgoCD repo credential
-mechanism as always — but the PAT must have `Contents: Read and write` permission
-(not just read-only).
+Image Updater needs write access to `gitops-apps-config` to commit the
+`.argocd-source-*.yaml` file. It uses the ArgoCD repo credential that was
+already registered — but that credential must have `Contents: Read and write`
+permission, not just read-only.
 
-**Verify or update your PAT scope:**
-- Go to GitHub → Settings → Developer settings → Personal access tokens
-- Confirm `podinfo-config` has `Contents: Read and write` permission
-- If read-only, edit the token and update to `Read and write`
+**Verify or update the GitHub PAT scope:**
+- GitHub → Settings → Developer settings → Personal access tokens
+- Find the token used for `gitops-apps-config`
+- Confirm or update to `Contents: Read and write`
 
-**Register or re-register `podinfo-config` with updated credentials:**
+**Re-register `gitops-apps-config` with the updated credential:**
 ```bash
-argocd repo add https://github.com/rselvantech/podinfo-config.git \
+argocd repo add https://github.com/rselvantech/gitops-apps-config.git \
   --username rselvantech \
   --password <GITHUB_PAT> \
-  --name podinfo-config \
   --upsert
 ```
 
-> **`--upsert`** — updates the existing credential entry instead of failing if
-> it already exists. Use this whenever re-registering a repo that was registered
-> in a prior demo.
+> **`--upsert`** — updates the existing credential entry. Without this flag,
+> the command fails if the repo is already registered. Always use `--upsert`
+> when updating credentials for an already-registered repo.
 
 **Verify:**
 ```bash
 argocd repo list
 ```
 
-**Expected:** `podinfo-config` listed with `Successful` status.
+**Expected:**
+```text
+TYPE  NAME                REPO                                              STATUS
+git   gitops-apps-config  https://github.com/rselvantech/gitops-apps-config  Successful
+```
 
 ---
 
-## Step 5: Add Manifests to `podinfo-config`
+## Step 5: Build the Application Manifests — Kustomize Base + Overlay
 
-The application manifests use `v1.0.0` as the starting image tag. Image Updater will
-update this to `v1.1.0` automatically after detecting it in the registry.
+The `podinfo` application uses the same Kustomize base + overlay pattern from
+Demo-14. The base declares `podinfo:v1.0.0` as the starting image tag. The
+overlay sets the namespace and replica count for the dev environment. Image
+Updater will write an override file that replaces the image tag without touching
+either the base or the overlay.
 
-**Set up `podinfo-config` local repo:**
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/15-image-updater/src
-mkdir podinfo-config && cd podinfo-config
+mkdir -p gitops-apps-config && cd gitops-apps-config
 
 git init
 git branch -M main
-git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/podinfo-config.git
+git remote add origin \
+  https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/gitops-apps-config.git
 git pull origin main --allow-unrelated-histories --no-rebase
 ```
 
-**Create `demo-15-image-updater/deployment.yaml`:**
+### Base manifests
+
+**`demo-15-image-updater/base/kustomization.yaml`:**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+```
+
+**`demo-15-image-updater/base/deployment.yaml`:**
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: podinfo
-  namespace: podinfo-image-updater
+  # no namespace — set by overlay kustomization.yaml
 spec:
   replicas: 1
   selector:
@@ -556,10 +671,12 @@ spec:
         app: podinfo
     spec:
       imagePullSecrets:
-        - name: dockerhub-secret
+        - name: dockerhub-secret      # pull secret — created in Step 6
       containers:
         - name: podinfo
-          image: rselvantech/podinfo:v1.0.0    # ← Image Updater will update this
+          image: rselvantech/podinfo:v1.0.0
+          # ↑ Image Updater will write an override — this line is NOT edited directly.
+          # The .argocd-source-*.yaml write-back file overrides this at sync time.
           ports:
             - containerPort: 9898
           env:
@@ -567,15 +684,22 @@ spec:
               value: "#3d8eb9"
             - name: PODINFO_UI_MESSAGE
               value: "Image Updater Demo — watch this tag change automatically"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
 ```
 
-**Create `demo-15-image-updater/service.yaml`:**
+**`demo-15-image-updater/base/service.yaml`:**
 ```yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: podinfo
-  namespace: podinfo-image-updater
+  # no namespace — set by overlay kustomization.yaml
 spec:
   selector:
     app: podinfo
@@ -584,66 +708,129 @@ spec:
       targetPort: 9898
 ```
 
-**Push to `podinfo-config`:**
+### Overlay — dev environment
+
+**`demo-15-image-updater/overlays/dev/kustomization.yaml`:**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base         # use 'resources', not deprecated 'bases'
+
+namespace: demo15-image-updater   # sets namespace on all resources
+
+namePrefix: dev-                  # podinfo → dev-podinfo
+
+commonLabels:
+  env: dev
+
+replicas:
+  - name: podinfo
+    count: 1
+
+patches:
+  - path: env-patch.yaml
+```
+
+**`demo-15-image-updater/overlays/dev/env-patch.yaml`:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podinfo              # base name — before namePrefix is applied
+spec:
+  template:
+    metadata:
+      labels:
+        env: dev
+```
+
+**Verify the overlay builds correctly:**
+```bash
+kustomize build demo-15-image-updater/overlays/dev/
+```
+
+**Verify:**
+```bash
+kustomize build demo-15-image-updater/overlays/dev/ \
+  | grep -E "namespace:|image:|name: dev-"
+```
+
+**Expected:**
+```text
+  namespace: demo15-image-updater
+  image: rselvantech/podinfo:v1.0.0
+  name: dev-podinfo
+```
+
+**Push:**
 ```bash
 git add demo-15-image-updater/
-git commit -m "feat: add demo-15 image updater manifests starting at v1.0.0"
+git commit -m "feat: add demo-15 podinfo kustomize base and dev overlay"
 git push origin main
 ```
 
 ---
 
-## Step 6: Create the Namespace and Docker Registry Secret
+## Step 6: Create the Namespace and Image Pull Secret
+
+The namespace and pull secret must exist before ArgoCD can sync the Deployment.
 
 ```bash
-kubectl create namespace podinfo-image-updater
+kubectl create namespace demo15-image-updater
 ```
 
-Create the pull secret in the new namespace — same pattern as Demo-05:
+**Create the image pull secret in the application namespace:**
 ```bash
 kubectl create secret docker-registry dockerhub-secret \
   --docker-server=https://index.docker.io/v1/ \
   --docker-username=rselvantech \
   --docker-password=<DOCKERHUB_TOKEN> \
-  --namespace=podinfo-image-updater
+  --namespace=demo15-image-updater
 ```
+
+> **This secret (`dockerhub-secret`) is separate from the Image Updater registry
+> secret (`image-updater-dockerhub` in `argocd` namespace) created in Step 3.**
+> This one is used by the kubelet to pull the `podinfo` image when starting the
+> pod. The other is used by Image Updater to call the Docker Hub API and list tags.
+> Same registry, two different credential consumers, two different secrets.
 
 **Verify:**
 ```bash
-kubectl get namespace podinfo-image-updater
-kubectl get secret dockerhub-secret -n podinfo-image-updater
+kubectl get ns demo15-image-updater
+kubectl get secret dockerhub-secret -n demo15-image-updater
 ```
 
 **Expected:**
 ```text
-NAME                     STATUS   AGE
-podinfo-image-updater    Active   5s
+NAME                    STATUS   AGE
+demo15-image-updater    Active   5s
 
-NAME               TYPE                             DATA   AGE
-dockerhub-secret   kubernetes.io/dockerconfigjson   1      5s
+NAME               TYPE                             DATA
+dockerhub-secret   kubernetes.io/dockerconfigjson   1
 ```
 
 ---
 
 ## Step 7: Create the Application CRD with Image Updater Annotations
 
-The Application CRD is where Image Updater is configured. All Image Updater
-behaviour is driven by annotations on the Application object — no separate
-CRD or configuration file is needed.
+All Image Updater behaviour is configured through annotations on the Application
+CRD. No separate CRD or configuration file is needed. The annotations tell Image
+Updater which images to watch, which strategy to use, and how to write back.
 
-**Set up `argocd-config` local repo:**
 ```bash
 cd gitops-labs/argo-cd-basics-to-prod/15-image-updater/src
-mkdir argocd-config && cd argocd-config
+mkdir -p argocd-config/demo-15-image-updater && cd argocd-config
 
 git init
 git branch -M main
-git remote add origin https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-config.git
+git remote add origin \
+  https://rselvantech:<GITHUB_PAT>@github.com/rselvantech/argocd-config.git
 git pull origin main --allow-unrelated-histories --no-rebase
 ```
 
-**Create `demo-15-image-updater/podinfo-image-updater-app.yaml`:**
-
+**`demo-15-image-updater/podinfo-image-updater-app.yaml`:**
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -651,74 +838,66 @@ metadata:
   name: podinfo-image-updater-demo
   namespace: argocd
   annotations:
-    # --- Image Updater annotations ---
-
-    # 1. Define the image(s) to watch — alias=registry/image
+    # ── Image Updater annotations ──────────────────────────────────────────────
+    #
+    # 1. image-list: defines which image(s) to watch
+    #    Format: <alias>=<registry>/<image>
+    #    'podinfo' is the alias — used in all other annotation keys below
+    #    'rselvantech/podinfo' is the Docker Hub image path
     argocd-image-updater.argoproj.io/image-list: podinfo=rselvantech/podinfo
 
-    # 2. Update strategy for the 'podinfo' alias — semver means newer version wins
+    # 2. update-strategy: how to select the new tag
+    #    semver → use semantic version ordering (v1.1.0 > v1.0.0)
     argocd-image-updater.argoproj.io/podinfo.update-strategy: semver
 
-    # 3. Constraint — only update within the v1.x.x minor range
+    # 3. allow-tags: constrain which tags are evaluated
+    #    Without this, Image Updater considers ALL tags on the image —
+    #    including 'latest', 'main', 'sha-abc123' which are not semver.
+    #    This regexp limits evaluation to v1.x.x tags only.
+    #    v2.0.0 would NOT be selected — major bumps require human review.
     argocd-image-updater.argoproj.io/podinfo.allow-tags: regexp:^v1\.\d+\.\d+$
 
-    # 4. Write-back method — git commits the override file to the config repo
+    # 4. write-back-method: how the updated tag is persisted
+    #    'git' → commits .argocd-source-<app>.yaml to the config repo
+    #    This is the only truly GitOps approach — the tag is in Git history
     argocd-image-updater.argoproj.io/write-back-method: git
 
-    # 5. Git credentials — uses the ArgoCD repo credential already registered
-    argocd-image-updater.argoproj.io/git-repository: https://github.com/rselvantech/podinfo-config.git
+    # 5. git-repository: which repo to commit the write-back file to
+    #    Must match a repo registered with ArgoCD credentials
+    argocd-image-updater.argoproj.io/git-repository: \
+      https://github.com/rselvantech/gitops-apps-config.git
 
-    # 6. Registry credentials — references the secret created in Step 3
-    argocd-image-updater.argoproj.io/podinfo.pull-secret: secret:argocd/image-updater-dockerhub#credentials
+    # 6. pull-secret: registry credentials for tag listing
+    #    Format: secret:<namespace>/<secret-name>#<key-in-secret>
+    #    References the secret created in Step 3 (with mandatory label)
+    argocd-image-updater.argoproj.io/podinfo.pull-secret: \
+      secret:argocd/image-updater-dockerhub#credentials
+    # ───────────────────────────────────────────────────────────────────────────
 
 spec:
   project: default
   source:
-    repoURL: https://github.com/rselvantech/podinfo-config.git
-    targetRevision: main                  # ← must be a branch name, not HEAD
-    path: demo-15-image-updater
+    repoURL: https://github.com/rselvantech/gitops-apps-config.git
+    targetRevision: main
+    # ↑ CRITICAL: must be a branch name — never HEAD
+    # Image Updater commits to the 'main' branch.
+    # If targetRevision: HEAD, ArgoCD resolves HEAD to a commit SHA at creation
+    # time and never detects Image Updater's new commits on main.
+    # Result: Image Updater logs show successful commits, ArgoCD shows Synced,
+    # but the pod image never updates. Silent failure — no error message.
+    path: demo-15-image-updater/overlays/dev
+    # ArgoCD finds kustomization.yaml → runs kustomize build → applies manifests
+    # Image Updater's write-back file is merged on top of kustomize output
   destination:
     server: https://kubernetes.default.svc
-    namespace: podinfo-image-updater
+    namespace: demo15-image-updater
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true
+      - CreateNamespace=false   # namespace created manually in Step 6
 ```
-
-**Annotation field-by-field explanation:**
-
-`image-list: podinfo=rselvantech/podinfo` — defines the image to watch.
-`podinfo` is an alias used to reference this image in all other annotations.
-`rselvantech/podinfo` is the registry path (Docker Hub shorthand for
-`docker.io/rselvantech/podinfo`).
-
-`podinfo.update-strategy: semver` — tells Image Updater to apply semantic
-version ordering. `v1.1.0 > v1.0.0` — the update will be applied.
-
-`podinfo.allow-tags: regexp:^v1\.\d+\.\d+$` — constrains which tags are
-considered. Only tags matching `v1.x.x` are evaluated. This prevents Image
-Updater from picking up `latest`, `main`, or other non-semver tags if they
-exist on the same image.
-
-`write-back-method: git` — use Git write-back (commits override file to repo)
-rather than direct ArgoCD write-back.
-
-`git-repository` — the URL of the config repo to write back to. Must match
-the repo registered with ArgoCD credentials.
-
-`podinfo.pull-secret: secret:argocd/image-updater-dockerhub#credentials` — tells
-Image Updater which secret to use for registry authentication. Format:
-`secret:<namespace>/<secret-name>#<key-in-secret>`.
-
-> **`targetRevision: main`** — this is the single most important rule when using
-> Image Updater with git write-back. Image Updater commits to the `main` branch.
-> If `targetRevision` is set to `HEAD`, ArgoCD resolves it to a commit SHA at
-> sync time — and Image Updater's new commits on `main` will not be detected
-> because the SHA changes but ArgoCD keeps checking the old one. Always set
-> `targetRevision` to an explicit branch name.
 
 **Push and apply:**
 ```bash
@@ -731,31 +910,18 @@ kubectl apply -f demo-15-image-updater/podinfo-image-updater-app.yaml
 
 **Verify the Application was created:**
 ```bash
-argocd app get podinfo-image-updater-demo
+argocd app get podinfo-image-updater-demo --refresh
 ```
 
 **Expected:**
 ```text
-Sync Status:   OutOfSync
-Health Status: Missing
+Sync Status:   Synced
+Health Status: Healthy
 ```
-
-Because `automated` sync is enabled, ArgoCD will sync within ~3 minutes —
-or click **Refresh** in the UI to trigger immediately.
 
 **Verify the initial deployment uses `v1.0.0`:**
 ```bash
-kubectl get pods -n podinfo-image-updater -w
-```
-
-**Expected:**
-```text
-NAME                       READY   STATUS    RESTARTS
-podinfo-xxxxxxxxx-xxxxx    1/1     Running   0
-```
-
-```bash
-kubectl get deployment podinfo -n podinfo-image-updater \
+kubectl get deployment dev-podinfo -n demo15-image-updater \
   -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```
 
@@ -764,13 +930,20 @@ kubectl get deployment podinfo -n podinfo-image-updater \
 rselvantech/podinfo:v1.0.0
 ```
 
+**Access the podinfo UI to confirm v1.0.0:**
+```bash
+kubectl port-forward svc/dev-podinfo -n demo15-image-updater 9898:9898
+```
+
+Open `http://localhost:9898` — the version shown is `v1.0.0`.
+
 ---
 
 ## Step 8: Observe Image Updater Detecting and Writing
 
-With the application deployed at `v1.0.0` and `v1.1.0` already pushed to Docker Hub,
-Image Updater will detect the newer tag on its next polling cycle and commit the
-override file to `podinfo-config`.
+With `v1.1.0` already pushed to Docker Hub and the Application deployed at
+`v1.0.0`, Image Updater will detect the newer tag on its next polling cycle
+(every 2 minutes by default) and commit the override file to `gitops-apps-config`.
 
 **Watch Image Updater logs in real time:**
 ```bash
@@ -778,42 +951,26 @@ kubectl logs -l app.kubernetes.io/name=argocd-image-updater \
   -n argocd -f --tail=50
 ```
 
-**Expected — Image Updater discovers v1.1.0 and commits:**
+**Expected — Image Updater discovers `v1.1.0` and commits:**
 ```text
-time="..." level=info msg="Starting image update cycle, considering 1 annotated application(s)"
-time="..." level=info msg="Processing application podinfo-image-updater-demo"
-time="..." level=info msg="Fetching available tags and digest for image rselvantech/podinfo"
-time="..." level=info msg="Found 2 tags for image rselvantech/podinfo" tags="[v1.0.0 v1.1.0]"
-time="..." level=info msg="Latest image according to semver: rselvantech/podinfo:v1.1.0"
-time="..." level=info msg="Updating image rselvantech/podinfo:v1.0.0 to rselvantech/podinfo:v1.1.0"
-time="..." level=info msg="Successfully updated the live application spec"
-time="..." level=info msg="Committing 1 parameter update(s) for application podinfo-image-updater-demo"
-time="..." level=info msg="Successfully updated Git"
+time="..." level=info  msg="Starting image update cycle, considering 1 annotated application(s)"
+time="..." level=info  msg="Processing application podinfo-image-updater-demo"
+time="..." level=info  msg="Fetching available tags and digest for image rselvantech/podinfo"
+time="..." level=info  msg="Found 2 tags for image rselvantech/podinfo" tags="[v1.0.0 v1.1.0]"
+time="..." level=info  msg="Latest image according to semver: rselvantech/podinfo:v1.1.0"
+time="..." level=info  msg="Updating image rselvantech/podinfo:v1.0.0 to rselvantech/podinfo:v1.1.0"
+time="..." level=info  msg="Committing 1 parameter update(s) for application podinfo-image-updater-demo"
+time="..." level=info  msg="Successfully updated Git"
 ```
 
-> Image Updater polls every 2 minutes by default. If you do not see the log
-> output immediately, wait up to 2 minutes. Logs are streamed in real time.
+> Image Updater polls every 2 minutes by default. If you do not see output
+> immediately, wait up to 2 minutes. The `-f` flag streams logs in real time.
 
-**Verify the write-back file was committed to `podinfo-config`:**
-
+**Verify the write-back file was committed to `gitops-apps-config`:**
 ```bash
-# Pull latest from podinfo-config to see the committed file
-cd gitops-labs/argo-cd-basics-to-prod/15-image-updater/src/podinfo-config
+cd gitops-labs/argo-cd-basics-to-prod/15-image-updater/src/gitops-apps-config
 git pull origin main
-
-ls -la demo-15-image-updater/
-```
-
-**Expected — new file committed by Image Updater:**
-```text
--rw-r--r--  deployment.yaml
--rw-r--r--  service.yaml
--rw-r--r--  .argocd-source-podinfo-image-updater-demo.yaml   ← committed by Image Updater
-```
-
-**Inspect the write-back file:**
-```bash
-cat demo-15-image-updater/.argocd-source-podinfo-image-updater-demo.yaml
+cat .argocd-source-podinfo-image-updater-demo.yaml
 ```
 
 **Expected:**
@@ -823,38 +980,32 @@ kustomize:
   - rselvantech/podinfo:v1.1.0
 ```
 
-**Check the Git commit history on `podinfo-config`:**
+> This file uses Kustomize image override syntax — the same format as
+> `spec.source.kustomize.images` in an Application CRD. ArgoCD merges this
+> with the Kustomize build output, replacing `rselvantech/podinfo:v1.0.0`
+> in the rendered Deployment with `rselvantech/podinfo:v1.1.0`.
+
+**Watch ArgoCD detect the Git commit and sync:**
 ```bash
-git log --oneline -5
-```
-
-**Expected — Image Updater commit visible:**
-```text
-a3f2c1d (HEAD -> main, origin/main) Update image rselvantech/podinfo:v1.1.0  ← Image Updater
-b4e1a2f feat: add demo-15 image updater manifests starting at v1.0.0
-```
-
----
-
-## Step 9: Verify ArgoCD Syncs with the New Tag
-
-After Image Updater commits the write-back file, ArgoCD detects the Git change and
-triggers an automated sync. The Deployment rolls out with `v1.1.0`.
-
-**Watch the rollout:**
-```bash
-kubectl rollout status deployment/podinfo -n podinfo-image-updater
+watch -n 3 'argocd app get podinfo-image-updater-demo | grep -E "Sync|Health|Image"'
 ```
 
 **Expected:**
 ```text
-Waiting for deployment "podinfo" rollout to finish: 1 out of 1 new replicas have been updated...
-deployment "podinfo" successfully rolled out
+Sync Status:   OutOfSync    ← ArgoCD detected the new commit from Image Updater
+Sync Status:   Synced       ← ArgoCD applied the updated manifest
+Health Status: Healthy
 ```
 
-**Verify the running pod uses `v1.1.0`:**
+---
+
+## Step 9: Verify the Full Chain — Registry to Running Pod
+
+Confirm the complete automation chain ran end-to-end correctly.
+
+**Verify the running image is now `v1.1.0`:**
 ```bash
-kubectl get deployment podinfo -n podinfo-image-updater \
+kubectl get deployment dev-podinfo -n demo15-image-updater \
   -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```
 
@@ -863,44 +1014,89 @@ kubectl get deployment podinfo -n podinfo-image-updater \
 rselvantech/podinfo:v1.1.0
 ```
 
-**Verify in ArgoCD UI:**
-- Go to `http://localhost:8080` → click `podinfo-image-updater-demo`
-- `SYNC STATUS:   Synced ✅`
-- `HEALTH STATUS: Healthy ✅`
-- Click the `podinfo` Deployment resource → `LIVE MANIFEST` tab
-- Confirm `image: rselvantech/podinfo:v1.1.0`
-
-**Access the podinfo UI to confirm the new version:**
+**Verify via the podinfo UI:**
 ```bash
-kubectl port-forward svc/podinfo -n podinfo-image-updater 9898:9898
+kubectl port-forward svc/dev-podinfo -n demo15-image-updater 9898:9898
 ```
 
-Open `http://localhost:9898` — the podinfo UI confirms the running version.
+Open `http://localhost:9898` — the version shown is now `v1.1.0`. The image
+changed from the automated Git commit by Image Updater, not from any manual
+YAML edit.
+
+**Verify the write-back file is the source of the image override:**
+```bash
+argocd app get podinfo-image-updater-demo -o yaml \
+  | grep -A5 "kustomize:"
+```
+
+**Expected:**
+```yaml
+kustomize:
+  images:
+  - rselvantech/podinfo:v1.1.0
+```
+
+This is ArgoCD showing the active Kustomize image override — sourced from the
+write-back file committed by Image Updater.
+
+**Verify the base manifest was NOT modified:**
+```bash
+grep "image:" \
+  gitops-apps-config/demo-15-image-updater/base/deployment.yaml
+```
+
+**Expected:**
+```text
+          image: rselvantech/podinfo:v1.0.0
+```
+
+The base still declares `v1.0.0`. The override file is what changed. Image
+Updater never modifies manifests directly — it only writes the
+`.argocd-source-*.yaml` override file.
+
+**Verify the full chain visually:**
+```
+Docker Hub: rselvantech/podinfo:v1.1.0  ← you pushed this
+     │
+     │  Image Updater detected (semver: v1.1.0 > v1.0.0)
+     ▼
+gitops-apps-config:                     ← Image Updater committed this
+  .argocd-source-podinfo-image-updater-demo.yaml
+    kustomize.images: [rselvantech/podinfo:v1.1.0]
+     │
+     │  ArgoCD detected Git commit
+     ▼
+Cluster: dev-podinfo Deployment         ← ArgoCD synced this
+  image: rselvantech/podinfo:v1.1.0
+     │
+     │  Pod rolled out
+     ▼
+http://localhost:9898 shows v1.1.0      ← visible in UI
+```
 
 ---
 
 ## Verify Final State
 
 ```bash
-# Application synced and healthy
-argocd app get podinfo-image-updater-demo
-
-# Pod running with v1.1.0
-kubectl get deployment podinfo -n podinfo-image-updater \
-  -o jsonpath='{.spec.template.spec.containers[0].image}'
-
-# Write-back file committed to podinfo-config
-cd gitops-labs/argo-cd-basics-to-prod/15-image-updater/src/podinfo-config
-git log --oneline -3
-
-# Image Updater pod is running
+# Image Updater running
 kubectl get pods -n argocd | grep image-updater
 
-# Registry credential secret has the required label
-kubectl get secret image-updater-dockerhub -n argocd --show-labels
+# Application Synced and Healthy
+argocd app get podinfo-image-updater-demo
 
-# podinfo-config registered with write access
-argocd repo list
+# Running image is v1.1.0
+kubectl get deployment dev-podinfo -n demo15-image-updater \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+# Write-back file exists in Git (pull first)
+git -C gitops-apps-config pull origin main --quiet
+ls -la gitops-apps-config/.argocd-source-podinfo-image-updater-demo.yaml
+cat gitops-apps-config/.argocd-source-podinfo-image-updater-demo.yaml
+
+# Base manifest still at v1.0.0 — unchanged by Image Updater
+grep "image:" \
+  gitops-apps-config/demo-15-image-updater/base/deployment.yaml
 ```
 
 ---
@@ -908,71 +1104,68 @@ argocd repo list
 ## Cleanup
 
 ```bash
-# Delete the Application (automated sync + prune removes namespace resources)
+# Delete the Application
 kubectl delete app podinfo-image-updater-demo -n argocd
 
-# Delete the namespace
-kubectl delete namespace podinfo-image-updater
+# Delete namespace (ArgoCD never deletes namespaces)
+kubectl delete ns demo15-image-updater
 
-# Remove the Image Updater registry credential secret
+# Remove the write-back file from gitops-apps-config
+cd gitops-labs/argo-cd-basics-to-prod/15-image-updater/src/gitops-apps-config
+git pull origin main
+git rm .argocd-source-podinfo-image-updater-demo.yaml 2>/dev/null || true
+git commit -m "cleanup: remove demo-15 image updater write-back file"
+git push origin main
+
+# Uninstall Image Updater (keep if using in Project-01)
+helm uninstall argocd-image-updater -n argocd
+
+# Remove registry credential secret
 kubectl delete secret image-updater-dockerhub -n argocd
 
-# Uninstall Image Updater (only if you are done with the course)
-helm uninstall argocd-image-updater -n argocd
-```
-
-> **Do NOT delete `podinfo-config`** — it is used in later demos.
-> The `.argocd-source-*.yaml` file committed by Image Updater can be left in
-> the repo — it will not affect other demos that point to different paths.
-
-**Verify cleanup:**
-```bash
-kubectl get namespace podinfo-image-updater   # Error: not found
-kubectl get pods -n argocd | grep image-updater  # No output (if uninstalled)
-argocd app list  # podinfo-image-updater-demo not listed
+# Restore gitops-apps-config credential to read-only PAT if desired
+# argocd repo add ... --upsert with read-only token
 ```
 
 ---
 
 ## Key Concepts Summary
 
-**The gap that Image Updater fills**
-Static GitOps requires someone to update the image tag in the config repo after
-every CI build. Image Updater automates this step — the config repo stays updated
-without human intervention, preserving the full GitOps audit trail.
+**Image Updater closes the CI → GitOps gap**
+It is the automated bridge between what your registry contains and what your
+config repo declares. Without it, someone must manually update the image tag
+after every CI build.
 
-**Image Updater is a separate controller, not part of ArgoCD core**
-It runs as its own pod in the `argocd` namespace and communicates with ArgoCD via
-its API. It is installed and upgraded independently from ArgoCD.
+**`git` write-back is the only true GitOps approach**
+The `argocd` write-back is fast but ephemeral — lost on Application recreation.
+The `git` write-back commits a `.argocd-source-*.yaml` file to the config repo,
+making every tag update auditable, version-controlled, and recoverable.
 
-**`git` write-back vs `argocd` write-back**
-`git` write-back commits an override file (`.argocd-source-<app-name>.yaml`) to
-your config repo. The new tag exists in Git history — recoverable, auditable, and
-durable. `argocd` write-back updates the Application object directly in Kubernetes
-without touching Git — fast but not durable. Always prefer `git` in production.
+**`targetRevision: main` is required — `HEAD` causes silent failure**
+Image Updater commits to a branch. If ArgoCD tracks a SHA (what `HEAD` resolves
+to), it never detects Image Updater's commits. The logs look correct but the pod
+never updates. Always use an explicit branch name.
 
-**`targetRevision: main` is mandatory with git write-back**
-Image Updater commits to a branch. If `targetRevision` is `HEAD`, ArgoCD resolves
-it to a commit SHA and may not detect subsequent commits. Always use an explicit
-branch name when using Image Updater.
+**The mandatory credentials label is the most common setup error**
+`argocd-image-updater.argoproj.io/credentials: "true"` on the registry secret
+is required. Without it, Image Updater ignores the secret entirely — no warning,
+no error, just no tag updates.
 
-**The write-back file is auto-managed — never edit it manually**
-`.argocd-source-<app-name>.yaml` is generated and maintained by Image Updater.
-Editing it manually will be overwritten on the next Image Updater cycle.
+**Two credentials, two separate purposes**
+The registry secret (Opaque, in `argocd` namespace) enables tag listing via the
+Docker Hub API. The image pull secret (dockerconfigjson, in the app namespace)
+enables the kubelet to pull the image. They are independent and must both be present.
 
-**Three update strategies for three different tagging patterns**
-`semver` for versioned releases, `latest` for rolling tags by push date,
-`digest` for mutable tags where content changes but the tag name stays the same.
+**Image Updater never modifies base manifests**
+It writes only to the `.argocd-source-*.yaml` override file. Base and overlay
+files remain unchanged. The override file is merged by ArgoCD on top of
+Kustomize output at sync time.
 
-**Two separate credential types**
-Registry credentials (querying tag lists from Docker Hub) and Git credentials
-(writing commits to the config repo) are independent. Both must be configured
-for `git` write-back to work end-to-end.
-
-**`allow-tags` prevents unintended updates**
-A regexp constraint on `allow-tags` ensures Image Updater only considers tags
-matching your versioning scheme. Without it, tags like `latest`, `main`, `sha-abc`
-could be picked up by the `semver` strategy if they happen to be the newest.
+**`allow-tags` makes the strategy explicit and safe**
+Without `allow-tags`, Image Updater evaluates all tags including mutable ones
+like `latest`. A regexp constraint ensures only the intended tag pattern is
+considered. Major version bumps can be excluded to prevent accidental
+auto-deployment of breaking changes.
 
 ---
 
@@ -980,110 +1173,102 @@ could be picked up by the `semver` strategy if they happen to be the newest.
 
 ```bash
 # Install Image Updater
-helm repo add argocd-image-updater https://argoproj.github.io/argocd-image-updater
-helm repo update
 helm install argocd-image-updater argocd-image-updater/argocd-image-updater \
   --namespace argocd \
   --set config.argocd.insecure=true \
   --set config.argocd.serverAddress=argocd-server.argocd.svc.cluster.local
 
-# Check Image Updater pod
-kubectl get pods -n argocd | grep image-updater
-
-# Stream Image Updater logs
-kubectl logs -l app.kubernetes.io/name=argocd-image-updater -n argocd -f
-
-# Create registry credential secret
+# Registry credential secret (mandatory label required)
 kubectl create secret generic image-updater-dockerhub \
   --namespace argocd \
-  --from-literal=credentials="rselvantech:<DOCKERHUB_TOKEN>"
-kubectl label secret image-updater-dockerhub \
-  -n argocd \
+  --from-literal=credentials="user:<token>"
+kubectl label secret image-updater-dockerhub -n argocd \
   argocd-image-updater.argoproj.io/credentials="true"
 
-# Register podinfo-config with write access
-argocd repo add https://github.com/rselvantech/podinfo-config.git \
-  --username rselvantech \
-  --password <GITHUB_PAT> \
-  --upsert
+# Watch Image Updater logs
+kubectl logs -l app.kubernetes.io/name=argocd-image-updater -n argocd -f
 
-# Push v1.1.0 image
+# Push a new image version
 docker tag rselvantech/podinfo:v1.0.0 rselvantech/podinfo:v1.1.0
 docker push rselvantech/podinfo:v1.1.0
 
-# Apply Application CRD
-kubectl apply -f demo-15-image-updater/podinfo-image-updater-app.yaml
+# Re-register repo with write access
+argocd repo add https://github.com/rselvantech/gitops-apps-config.git \
+  --username rselvantech --password <PAT> --upsert
 
-# Verify current image in deployment
-kubectl get deployment podinfo -n podinfo-image-updater \
+# Check running image
+kubectl get deployment dev-podinfo -n demo15-image-updater \
   -o jsonpath='{.spec.template.spec.containers[0].image}'
 
-# Watch Image Updater logs for update cycle
-kubectl logs -l app.kubernetes.io/name=argocd-image-updater \
-  -n argocd -f --tail=50
+# Check write-back file
+cat .argocd-source-podinfo-image-updater-demo.yaml
 
-# Pull latest from podinfo-config to inspect write-back file
-git pull origin main
-cat demo-15-image-updater/.argocd-source-podinfo-image-updater-demo.yaml
-
-# Verify ArgoCD synced with new tag
-kubectl rollout status deployment/podinfo -n podinfo-image-updater
-
-# Access podinfo UI
-kubectl port-forward svc/podinfo -n podinfo-image-updater 9898:9898
+# Verify kustomize output pre-sync
+kustomize build demo-15-image-updater/overlays/dev/
 ```
 
 ---
 
 ## Lessons Learned
 
-**1. `targetRevision: main` is not optional when using git write-back**
-Using `HEAD` causes ArgoCD to resolve to a commit SHA, making it unable to
-track new commits from Image Updater. This is one of the most common setup
-mistakes. Always use an explicit branch name.
+**1. `targetRevision: main` is required — `HEAD` causes silent failure**
+Image Updater commits to a branch (`main`). If `targetRevision: HEAD` is set,
+ArgoCD resolves it to a commit SHA at Application creation time and never detects
+subsequent commits. Image Updater logs show success, ArgoCD shows Synced, but
+the pod image never changes. There is no error message. Always use an explicit
+branch name — `main`, never `HEAD`. This is also the course-wide rule from Demo-10.
 
-**2. The registry credential label is mandatory**
-The `argocd-image-updater.argoproj.io/credentials: "true"` label on the
-secret is not optional. Without it, Image Updater ignores the secret entirely
-and falls back to unauthenticated access — which fails for private registries
-and hits rate limits on Docker Hub for public ones.
+**2. The mandatory label is the most common Image Updater setup error**
+`argocd-image-updater.argoproj.io/credentials: "true"` must be on the registry
+secret. Without it, Image Updater scans the `argocd` namespace for secrets and
+ignores any without this label — silently. No error, no warning, no tag updates.
+Always verify the label with `kubectl get secret --show-labels`.
 
-**3. Two credential types — registry and Git — serve different purposes**
-Registry credentials (for reading tag metadata) and Git credentials (for writing
-commits) are configured at different layers. Confusing them or assuming one covers
-the other is a common source of errors during setup.
+**3. Two separate credentials for two separate purposes**
+The image pull secret (kubelet, app namespace, dockerconfigjson) and the registry
+API credential (Image Updater, argocd namespace, Opaque) solve different problems.
+Both must exist. Reusing or confusing them causes failures at different points
+in the chain.
 
-**4. `allow-tags` is a production safeguard, not a nice-to-have**
-Without a tag constraint, Image Updater may pick up tags like `latest`, `main`,
-feature branch SHAs, or other non-release tags that happen to exist on your image.
-Always define an `allow-tags` regexp that matches only your release tag pattern.
+**4. `allow-tags` prevents accidental major version auto-deployment**
+Without a tag constraint, Image Updater considers all tags. A major version bump
+(`v2.0.0`) may be selected by semver if it is newer — deploying a breaking change
+automatically. Use `regexp:^v1\.\d+\.\d+$` to limit auto-updates within a major
+version. Major bumps require human review.
 
-**5. The write-back file is owned by Image Updater — do not edit it**
-`.argocd-source-<app-name>.yaml` is fully managed by Image Updater. Any manual
-edit will be overwritten on the next update cycle. Treat it as generated output,
-not a configuration file.
+**5. Image Updater never modifies base manifests — only the write-back file**
+The `.argocd-source-*.yaml` file is the only thing Image Updater writes. Base
+manifests and overlay `kustomization.yaml` files are never touched. The base
+image tag stays at its original value — the write-back file is the override.
+Verify this with `grep "image:" base/deployment.yaml` after Image Updater runs.
 
-**6. Image Updater does not build images — it only watches and updates tags**
-Image Updater has no CI capability. It observes what is already in the registry.
-Your CI pipeline is still responsible for building and pushing images. Image
-Updater picks up what CI has pushed and propagates it to your config repo.
+**6. Image Updater + Kustomize write-back uses Kustomize image override syntax**
+The write-back file contains `kustomize.images: [image:tag]` — the same format
+as `spec.source.kustomize.images` in an Application CRD. ArgoCD merges this
+into the Kustomize build output. Using Image Updater with Kustomize overlays
+is the production pattern — not raw manifests.
 
-**7. Polling interval is 2 minutes by default**
-Image Updater checks the registry every 2 minutes. This is configurable via the
-`ARGOCD_IMAGE_UPDATER_INTERVAL` environment variable on the Image Updater pod.
-After Image Updater commits, ArgoCD also needs a polling cycle (3 minutes by
-default) to detect the Git change — unless automated sync triggers immediately
-on the push event. Total latency from push to running pod: 2–5 minutes typical.
+**7. Use `resources:` not `bases:` in overlay kustomization.yaml**
+Consistent with Demo-14. `bases:` is deprecated since Kustomize v3.2 and removed
+in v4+. Always reference the base with `resources: - ../../base`.
+
+**8. `--upsert` is required when re-registering an already-registered repo**
+`argocd repo add` fails if the repo already exists. `--upsert` updates the
+existing credential entry. Always include `--upsert` when updating credentials
+for repos registered in prior demos.
+
+**9. ArgoCD never deletes namespaces — delete manually after cleanup**
+Consistent with Demo-13, Demo-14, Demo-15. `CreateNamespace=true` creates the
+namespace. Deleting an Application or ApplicationSet does not remove it.
+Always `kubectl delete ns` explicitly.
 
 ---
 
 ## What's Next
 
-**Project-01: E2E GitOps on EKS — GitLab CI + Image Updater + Cognito RBAC**
-Bring everything together in a real cloud environment — EKS cluster on AWS,
-GitLab CI building the Goals App and pushing to GitLab Container Registry,
-Image Updater using the semver strategy to propagate new builds automatically,
-Cognito SSO for ArgoCD login, and RBAC separating admin and read-only access.
-Image Updater is used here with a GitLab Container Registry private image
-instead of Docker Hub — the configuration pattern is identical, only the
-registry URL and credential format differ.
+**Demo-16: ApplicationSet Progressive Sync — Safe Multi-Environment Rollouts**
+Demo-16 is a standalone demo that builds its own Kustomize base, overlays,
+and ApplicationSet in a separate `demo-16-progressive-sync/` folder. It adds
+`strategy: RollingSync` to control rollout order — dev syncs first, must be
+Healthy, then staging, then prod. A bad change stops at dev and never reaches
+production. Demo-15's resources are untouched.

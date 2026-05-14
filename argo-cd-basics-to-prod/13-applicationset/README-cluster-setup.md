@@ -1060,6 +1060,15 @@ Always verify active context with `kubectl config current-context` before any
 (`us-east-ohio`). Pod verification for `middle-east-uae` requires explicitly
 switching context — `kubectl` does not follow ArgoCD's cluster destination.
 
+**8. `argocd cluster add` may partially succeed if the port-forward dies mid-command**
+If the minikube container restarts during `docker network connect` and kills the
+ArgoCD port-forward, `argocd cluster add` will create the `argocd-manager` SA on
+the TARGET cluster but fail when reporting back — leaving a partial registration.
+Run `argocd cluster list` after recovery to check whether the cluster appeared.
+If it did, registration succeeded and no re-run is needed. If it is missing,
+re-run the full `argocd cluster add` command — the existing SA on the target will
+be reused (you will see "already exists" in the output, which is harmless).
+
 ---
 
 ## Next Steps
